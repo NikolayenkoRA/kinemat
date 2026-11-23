@@ -1,6 +1,7 @@
 import { t, lang, setLang, applyStatic } from './i18n.js';
+import { initTheory, refreshTheory, toggleTheory, theoryAnalysis, setTheoryTab } from './theory-ui.js';
 import { emptyMech, addJoint, addLink, deleteItems, setDriver, setLinearDriver, fixDriver, dof, jointById, linkById, linksOfJoint, camById, addCam, rebuildCam, cleanup, newId, validate } from './model.js';
-import { compile, advance, tangent, dragTo, pointOf, localGrab, driverAngle, sweep, angCont, railFrame, saveAngles, loadAngles } from './solver.js';
+import { compile, advance, tangent, dragTo, dragPath, pointOf, localGrab, driverAngle, sweep, angCont, railFrame, saveAngles, loadAngles } from './solver.js';
 import { camProfile, camLaw, LAWS, camBetas } from './cam.js';
 import { PRESETS, PRESET_KEYS } from './presets.js';
 import { drawChart } from './chart.js';
@@ -35,7 +36,7 @@ function toggleSel(it) { const k = key(it); st.selSet.has(k) ? st.selSet.delete(
 function loadLocal() { try { const s = localStorage.getItem(LS); return s ? validate(JSON.parse(s)) : null; } catch { return null; } }
 function saveLocal() { try { localStorage.setItem(LS, JSON.stringify(mech)); } catch {} }
 function pushUndo() { st.undo.push(JSON.stringify(mech)); if (st.undo.length > 200) st.undo.shift(); st.redo = []; }
-function changed(geom = true) { if (geom) { st.geom++; chart = null; } cleanup(mech); saveLocal(); renderPanels(); if (geom) autoChart(); }
+function changed(geom = true) { if (geom) { st.geom++; chart = null; } cleanup(mech); saveLocal(); renderPanels(); if (geom) autoChart(); refreshTheory(); }
 function undo() { if (!st.undo.length || st.mode !== 'edit') return; st.redo.push(JSON.stringify(mech)); mech = validate(JSON.parse(st.undo.pop())); selectOnly(null); changed(); }
 function redo() { if (!st.redo.length || st.mode !== 'edit') return; st.undo.push(JSON.stringify(mech)); mech = validate(JSON.parse(st.redo.pop())); selectOnly(null); changed(); }
 function setMech(m) { pushUndo(); mech = m; selectOnly(null); st.draft = []; changed(); fitView(); }
@@ -223,7 +224,9 @@ function draw() {
   if (live() && $('#chkTr').checked) for (const [, pts] of sim.traces) {
     if (pts.length < 2) continue;
     ctx.strokeStyle = '#e11d48'; ctx.lineWidth = 1.6; ctx.beginPath();
-    pts.forEach((p, k) => { const [x, y] = toS(p[0], p[1]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    let pen = false;
+    for (const p of pts) { if (!p) { pen = false; continue; } const [x, y] = toS(p[0], p[1]); pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true; }
+    ctx.stroke();
   }
   // кулачки
   for (const c of mech.cams || []) {
@@ -361,13 +364,16 @@ function drawVectors(V, col) {
 // ---------- симуляция ----------
 let toastTimer = 0;
 function toast(msg, ok = false) { const el = $('#toast'); el.textContent = msg; el.style.background = ok ? '#1d4ed8' : '#b91c1c'; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2400); }
+const TRACE_GAP = 0.08;
 function recordTraces() {
   const s = sim.sys;
   for (const j of mech.joints) if (j.trace) {
     const i = s.idx.get(j.id); if (i === undefined) continue;
     let arr = sim.traces.get(j.id); if (!arr) sim.traces.set(j.id, arr = []);
-    const p = [sim.X[2 * i], sim.X[2 * i + 1]], q = arr.at(-1);
-    if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) * st.view.s > 0.7) { arr.push(p); if (arr.length > 6000) arr.shift(); }
+    const p = [sim.X[2 * i], sim.X[2 * i + 1]], q = arr.at(-1), dq = q ? Math.hypot(p[0] - q[0], p[1] - q[1]) : 0;
+    // разрыв линии при скачке: хорды через кривую не рисуем
+    if (q && dq > TRACE_GAP * s.scale) arr.push(null);
+    if (!q || dq * st.view.s > 0.7) { arr.push(p); if (arr.length > 6000) arr.shift(); }
   }
 }
 function stepSim(dAbs) {
@@ -386,9 +392,19 @@ function stepSim(dAbs) {
   updateV(); recordTraces();
 }
 let lastT = performance.now();
+// Свободное перемещение: ведём захваченную точку к цели малыми подшагами (см. dragPath)
+function grabStep(tmax) {
+  const before = pointOf(sim.X, sim.grab), wpt = sim.target;
+  sim.X = dragPath(sim.sys, sim.X, sim.grab, wpt[0], wpt[1], X => { sim.X = X; recordTraces(); }, 0.02 * sim.sys.scale, tmax);
+  const after = pointOf(sim.X, sim.grab);
+  sim.grabLag = Math.hypot(after[0] - wpt[0], after[1] - wpt[1]) > 1e-4 * sim.sys.scale && Math.hypot(after[0] - before[0], after[1] - before[1]) > 1e-4 * sim.sys.scale;
+  if (sim.sys.driver) { const th = driverAngle(sim.sys, sim.X); sim.theta = sim.sys.driver.kind === 'lin' ? th : sim.theta + Math.atan2(Math.sin(th - sim.theta), Math.cos(th - sim.theta)); }
+  sim.V = sim.A = sim.Tprev = null; recordTraces(); updateCoordInputs();
+}
 function loop(now) {
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
   if (st.mode === 'sim' && sim.playing) stepSim(inputRate() * sim.mul * dt);
+  if (sim.grab && sim.grabLag && action?.type === 'grab') grabStep(12);
   draw();
   if (chart && live() && (sim.playing || sim.grab)) renderChart();
   requestAnimationFrame(loop);
@@ -555,10 +571,7 @@ cv.addEventListener('pointermove', e => {
     action.ids.forEach((id, k) => { const q = jointById(mech, id); q.x = action.orig[k][0] + dx; q.y = action.orig[k][1] + dy; });
     st.geom++; chart = null; updateCoordInputs();
   } else if (action.type === 'grab') {
-    sim.target = wpt;
-    sim.X = dragTo(sim.sys, sim.X, sim.grab, ...wpt);
-    if (sim.sys.driver) { const th = driverAngle(sim.sys, sim.X); sim.theta = sim.sys.driver.kind === 'lin' ? th : sim.theta + Math.atan2(Math.sin(th - sim.theta), Math.cos(th - sim.theta)); }
-    sim.V = sim.A = sim.Tprev = null; recordTraces(); updateCoordInputs();
+    sim.target = wpt; grabStep(40);
   }
 });
 function endPointer(e) {
@@ -892,7 +905,9 @@ $('#btnLinkDone').onclick = finishLink; $('#btnLinkCancel').onclick = cancelLink
 $('#btnChart').onclick = autoChart; $('#btnCsv').onclick = exportCsv;
 $('#chartOut').onchange = renderChart;
 $('#lang').value = lang;
-$('#lang').onchange = e => { setLang(e.target.value); fillPresets(); renderPanels(); syncHint(); syncSimUi(); renderChart(); };
+$('#lang').onchange = e => { setLang(e.target.value); fillPresets(); renderPanels(); syncHint(); syncSimUi(); renderChart(); refreshTheory(); };
+initTheory({ getMech: () => mech, getCanvas: () => cv, download });
+$('#btnTheory').onclick = () => toggleTheory();
 function fillPresets() { $('#preset').innerHTML = `<option value="">${t('choosePreset')}</option>` + PRESET_KEYS.map(k => `<option value="${k}">${t('p_' + k)}</option>`).join(''); }
 $('#preset').onchange = e => { const k = e.target.value; if (!k) return; setMode('edit'); setMech(PRESETS[k]()); e.target.value = ''; };
 $('#btnNew').onclick = () => { if (confirm(t('confirmNew'))) { setMode('edit'); setMech(emptyMech()); st.view = { x: 0, y: 0, s: 4 }; } };
@@ -912,5 +927,6 @@ syncSimUi(); renderPanels(); syncHint();
 requestAnimationFrame(loop);
 window.__app = {
   st, sim, get mech() { return mech; }, setMode, loadPreset: k => setMech(PRESETS[k]()), toS, P,
+  theory: theoryAnalysis, toggleTheory, setTheoryTab,
   select: (kind, id) => { selectOnly({ kind, id }); renderPanels(); autoChart(); }, selCount: () => selItems().length, fitView, geo,
 };

@@ -73,3 +73,45 @@ button.danger { background:#fee2e2; border-color:#fca5a5; color:#991b1b; }
 button.danger:hover { background:#fecaca; }
 .selcount { background:var(--acc2); border-radius:10px; padding:8px 10px; margin:4px 0 8px; }
 .selbadge { color:var(--acc); font-weight:600; }
+/* --- Теория --- */
+.theory-btn { font-weight:600; }
+.theory-btn.on { background:var(--acc); color:#fff; border-color:var(--acc); }
+.theory { position:fixed; right:0; bottom:0; top:52px; width:min(780px, 100vw); background:var(--panel); border-left:1px solid var(--line); box-shadow:-8px 0 24px rgba(15,23,42,.12); z-index:50; display:flex; flex-direction:column; }
+.theory[hidden] { display:none; }
+.th-head { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.th-head .spacer { flex:1; }
+.th-body { overflow:auto; padding:6px 18px 24px; flex:1; }
+.th-body h3 { font-size:15px; margin:18px 0 8px; color:var(--fg); }
+.th-body section + section { border-top:1px solid var(--line); }
+.th-wrap { overflow-x:auto; }
+.th-table { border-collapse:collapse; width:100%; font-size:13px; }
+.th-table th, .th-table td { border:1px solid var(--line); padding:4px 7px; text-align:left; vertical-align:top; }
+.th-table th { background:#f1f4f9; font-weight:600; }
+.th-table tbody tr:nth-child(even) td { background:#fafbfd; }
+.th-terms li, .th-notes li { margin:3px 0; }
+.th-notes { color:#374151; font-size:13px; }
+.th-check { background:#f8fafc; border:1px solid var(--line); border-radius:10px; padding:8px 12px; margin:8px 0; }
+.th-check p { margin:6px 0; }
+.th-body .ok { color:#15803d; font-weight:600; }
+.th-body .warn { color:#b45309; font-weight:600; }
+.th-art { border:1px solid var(--line); border-radius:10px; margin:10px 0; background:#fff; }
+.th-art summary { cursor:pointer; padding:9px 12px; font-weight:600; }
+.th-art-body { padding:0 14px 10px; line-height:1.5; }
+.th-live { border-top:1px dashed var(--line); margin-top:8px; padding-top:4px; }
+.ref-svg { display:block; max-width:100%; height:auto; max-height:140px; margin:6px auto; font-family:system-ui, sans-serif; }
+.th-print-head { display:none; }
+.katex-display { overflow-x:auto; overflow-y:hidden; padding:2px 0; }
+@media print {
+  @page { margin:14mm; }
+  html, body { height:auto !important; overflow:visible !important; display:block !important; background:#fff; }
+  body > *:not(#theory) { display:none !important; }
+  .theory { position:static !important; width:auto !important; box-shadow:none; border:0; display:block !important; }
+  .th-head { display:none !important; }
+  .th-body { overflow:visible; padding:0; }
+  .th-print-head { display:block; }
+  .th-print-head h2 { margin:0 0 6px; font-size:18px; }
+  .th-print-head img { max-width:100%; max-height:90mm; border:1px solid #ccc; display:block; margin:4px 0; }
+  .th-table { font-size:11px; } .th-table th { background:#eee !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .th-body section, .th-art { break-inside:avoid-page; }
+  details.th-art > .th-art-body { display:block; }
+}

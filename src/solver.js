@@ -324,7 +324,7 @@ function grabRows(sys, g) {
 
 // Свободное перемещение: точка захвата тянется к цели (мягкая связь), жёсткие связи сохраняются.
 // Возвращает новый X (или старый, если двигаться некуда).
-export function dragTo(sys, X0, g, tx, ty, iters = 12) {
+export function dragTo(sys, X0, g, tx, ty, iters = 12, maxStep = 0.1 * sys.scale, budget = Infinity) {
   const nv = sys.nv; let X = X0.slice();
   if (!nv) return X;
   const W2 = 1e4, mu = 1e-4;
@@ -349,15 +349,40 @@ export function dragTo(sys, X0, g, tx, ty, iters = 12) {
     for (let a = 0; a < nv; a++) M[a * nv + a] += mu;
     const dx = solveSPD(M, nv, gvec);
     const mx = maxAbs(dx); if (mx < 1e-10 * sys.scale) break;
-    const lim = 0.1 * sys.scale;
+    const lim = Math.min(0.1 * sys.scale, maxStep);
     const Xt = X.slice();
     applyDx(sys, Xt, dx, mx > lim ? -lim / mx : -1);
     const res = solveHard(sys, Xt, 0, false, 25);
     let jump = 0; for (let q = 0; q < Xt.length; q++) jump = Math.max(jump, Math.abs(Xt[q] - X[q]));
-    if (!res.ok || jump > 0.4 * sys.scale) break;
+    // защита от перескока на другую ветвь сборки: шарнир не может уйти намного дальше шага
+    if (!res.ok || jump > Math.min(0.4 * sys.scale, 4 * lim + 0.01 * sys.scale)) break;
+    if (budget < Infinity) { let tot = 0; for (let q = 0; q < Xt.length; q++) tot = Math.max(tot, Math.abs(Xt[q] - X0[q])); if (tot > budget) break; }
     const [nx, ny] = pointOf(Xt, g);
     if (Math.hypot(nx - tx, ny - ty) > Math.hypot(rt[0], rt[1]) - 1e-9 * sys.scale) break;
     X = Xt; commitAngles(sys, X);
+  }
+  return X;
+}
+
+// Перемещение мышью с подшагами: цель ведётся от текущего положения точки к новой
+// небольшими шагами (≤ step), каждый шаг решается с тёплым стартом — механизм движется
+// непрерывно и не перескакивает на другую ветвь сборки. onStep(X) — после каждого подшага.
+export function dragPath(sys, X0, g, tx, ty, onStep = null, step = 0.02 * sys.scale, tmax = Infinity) {
+  let X = X0.slice(); if (!sys.nv) return X;
+  const [fx, fy] = pointOf(X, g), D = Math.hypot(tx - fx, ty - fy);
+  const n = Math.min(500, Math.max(1, Math.ceil(D / step)));
+  const dist = Y => { const [px, py] = pointOf(Y, g); return Math.hypot(px - tx, py - ty); };
+  const t0 = Date.now(), late = () => Date.now() - t0 > tmax; // не подвешиваем интерфейс: остаток догонит следующее событие
+  for (let k = 1; k <= n && !late(); k++) {
+    const t = k / n;
+    X = dragTo(sys, X, g, fx + (tx - fx) * t, fy + (ty - fy) * t, 12, step / 2, 1.5 * step);
+    if (onStep) onStep(X);
+  }
+  // точка отстала (упор, особое положение) — догоняем теми же малыми шагами, пока есть прогресс
+  for (let k = 0, d = dist(X); k < 300 && d > 1e-7 * sys.scale && !late(); k++) {
+    const Xn = dragTo(sys, X, g, tx, ty, 12, step / 2, 1.5 * step), dn = dist(Xn);
+    if (dn > d - 1e-6 * sys.scale) break;
+    X = Xn; d = dn; if (onStep) onStep(X);
   }
   return X;
 }
