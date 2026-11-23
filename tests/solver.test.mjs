@@ -1,5 +1,5 @@
 // Автотесты решателя: node tests/solver.test.mjs
-import { compile, sweep, dragTo, pointOf, localGrab, residual, advance, railFrame } from '../src/solver.js';
+import { compile, sweep, dragTo, dragPath, pointOf, localGrab, residual, advance, railFrame } from '../src/solver.js';
 import { lawY, camLaw, LAWS } from '../src/cam.js';
 import { validate } from '../src/model.js';
 import { PRESETS, PRESET_KEYS } from '../src/presets.js';
@@ -88,6 +88,27 @@ function dragTest(key, jointName, path) {
   const s = compile(m); const X = dragTo(s, s.X0, { kind: 'j', i: 1 }, 10, 30);
   check('free link (W=3): drags, length kept', Math.abs(dist(X, 0, 1) - 40) < 1e-8 && Math.hypot(X[2] - 10, X[3] - 30) < 1e-3);
   check('dof free link = 3', dof(m).W === 3);
+}
+// 4b. Быстрое перемещение точки шатуна большими скачками: без хорд и без смены ветви сборки
+{
+  const m = PRESETS.fourbar(), s = compile(m), id = n => s.idx.get(m.joints.find(j => j.name === n).id);
+  const pi = id('P'), ai = id('A'), bi = id('B'), o2 = id('O₂');
+  const branch = X => Math.sign((X[2 * ai] - X[2 * bi]) * (X[2 * o2 + 1] - X[2 * bi + 1]) - (X[2 * ai + 1] - X[2 * bi + 1]) * (X[2 * o2] - X[2 * bi]));
+  const ref = sweep(s, s.X0, s.theta0, 1, 360), curve = ref.frames.map(f => [f.X[2 * pi], f.X[2 * pi + 1]]);
+  const b0 = branch(s.X0), thr = 0.08 * s.scale;
+  let X = s.X0.slice(), prev = [X[2 * pi], X[2 * pi + 1]], maxSeg = 0, flips = 0, worst = 0;
+  const targets = []; for (let k = 40; k <= 720; k += 40) targets.push(curve[k % 360]);
+  targets.push([prev[0] + 60, prev[1] - 50], [prev[0] - 70, prev[1] + 40]); // и пара рывков мимо кривой
+  for (const [tx, ty] of targets) X = dragPath(s, X, { kind: 'j', i: pi }, tx, ty, Xs => {
+    const p = [Xs[2 * pi], Xs[2 * pi + 1]]; maxSeg = Math.max(maxSeg, Math.hypot(p[0] - prev[0], p[1] - prev[1])); prev = p;
+    if (branch(Xs) !== b0) flips++; worst = Math.max(worst, maxLenErr(m, s, Xs));
+  });
+  const gotEnd = Math.hypot(X[2 * pi] - curve[0][0], X[2 * pi + 1] - curve[0][1]);
+  check('fast drag of coupler point: no trace segment longer than threshold', maxSeg <= thr, `max segment ${maxSeg.toFixed(2)} mm ≤ ${thr.toFixed(2)} mm`);
+  check('fast drag of coupler point: same assembly branch, constraints kept', flips === 0 && worst < 1e-8, `flips=${flips}, err=${worst.toExponential(2)}`);
+  let Y = s.X0.slice(); for (const tg of targets.slice(0, 18)) Y = dragPath(s, Y, { kind: 'j', i: pi }, ...tg);
+  const e = Math.hypot(Y[2 * pi] - curve[0][0], Y[2 * pi + 1] - curve[0][1]);
+  check('fast drag along coupler curve: two full loops reach the target', e < 1e-3, `Δ=${e.toExponential(2)} mm`);
 }
 // 5. Мёртвое положение: коромысло-коромысло, ведомое от коромысла, должно заклинить
 {

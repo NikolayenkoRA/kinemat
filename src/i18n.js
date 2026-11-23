@@ -1,5 +1,6 @@
 const D = {
   ru: {
+    theory: 'Теория',
     title: 'Kinemat — редактор и симулятор плоских механизмов',
     toolGear: 'Зубчатое колесо (Z)', toolMesh: 'Зацепление (M)', toolCam: 'Кулачок (K)',
     hintSelect: 'Рамка слева направо — объекты целиком внутри, справа налево — пересекаемые. Shift/Ctrl+щелчок — добавить/убрать, Ctrl+A — всё, Delete — удалить. Панорама: правая/средняя кнопка или пробел.',
@@ -50,6 +51,7 @@ const D = {
     dofOver: 'статически неопределимая', dofZero: 'ферма (неподвижна)',
   },
   en: {
+    theory: 'Theory',
     title: 'Kinemat — planar mechanism editor & simulator',
     toolGear: 'Gear (Z)', toolMesh: 'Gear mesh (M)', toolCam: 'Cam (K)',
     hintSelect: 'Box left→right selects objects fully inside, right→left selects crossed ones. Shift/Ctrl+click adds/removes, Ctrl+A all, Delete removes. Pan: right/middle button or Space.',

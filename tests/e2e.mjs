@@ -14,10 +14,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 let browser;
 try { browser = await chromium.launch(); }
-catch { // запасной вариант: любой уже скачанный headless shell
+catch { // запасные варианты: скачанный headless shell или системный Chrome/Chromium
   const base = path.join(os.homedir(), '.cache/ms-playwright');
-  const dir = fs.readdirSync(base).filter(d => d.startsWith('chromium_headless_shell-')).sort().pop();
-  browser = await chromium.launch({ executablePath: path.join(base, dir, 'chrome-headless-shell-linux64/chrome-headless-shell') });
+  const cands = [process.env.CHROME_PATH];
+  if (fs.existsSync(base)) for (const d of fs.readdirSync(base).sort().reverse()) cands.push(path.join(base, d, 'chrome-headless-shell-linux64/chrome-headless-shell'), path.join(base, d, 'chrome-linux/chrome'));
+  cands.push('/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser');
+  const exe = cands.find(c => c && fs.existsSync(c));
+  if (!exe) throw new Error('No Chromium found: run `npx playwright install chromium` or set CHROME_PATH');
+  browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox'] });
 }
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
@@ -177,6 +181,61 @@ try {
   await page.screenshot({ path: path.join(shots, '13-cam-chart.png') });
   await page.selectOption('#chartOut', 'cs'); await page.waitForTimeout(150);
   await page.locator('.chartPanel').screenshot({ path: path.join(shots, '13b-cam-s-chart.png') });
+
+  // --- свободное перемещение: быстрые рывки точки шатуна не дают хорд ---
+  await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200);
+  await page.click('[data-mode=drag]'); await page.waitForTimeout(100);
+  {
+    const pId = await jid('P'), [px, py] = await scr(pId);
+    await page.mouse.move(canvasBox.x + px, canvasBox.y + py); await page.mouse.down();
+    const jumps = [[-120, 40], [-40, 160], [120, 140], [160, -20], [0, -60], [-150, 60]];
+    for (const [dx, dy] of jumps) { await page.mouse.move(canvasBox.x + px + dx, canvasBox.y + py + dy, { steps: 1 }); await page.waitForTimeout(30); }
+    await page.mouse.up();
+    const tr = await page.evaluate(id => { const a = window.__app, pts = a.sim.traces.get(id) || []; let mx = 0, br = 0; for (let k = 1; k < pts.length; k++) { if (!pts[k] || !pts[k - 1]) { br++; continue; } mx = Math.max(mx, Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1])); } return { n: pts.length, mx, br, scale: a.sim.sys.scale }; }, pId);
+    check('free move: fast pointer jumps leave no chord in the coupler trace', tr.n > 20 && tr.mx <= 0.08 * tr.scale, `points=${tr.n}, max segment ${tr.mx.toFixed(2)} mm, breaks=${tr.br}`);
+    await page.screenshot({ path: path.join(shots, '15-free-move-fast-drag.png') });
+  }
+  await page.click('[data-mode=edit]');
+
+  // --- Теория ---
+  await page.click('#btnTheory'); await page.waitForTimeout(400);
+  check('Theory panel opens (RU)', await page.isVisible('#theory') && (await page.textContent('#theory')).includes('Степень подвижности'));
+  {
+    const a = await page.evaluate(() => window.__app.theory());
+    const txt = await page.textContent('#thBody');
+    check('Theory four-bar: W=1, I(0,1)→II(2,3), dyad вид 1', a.W === 1 && a.formula === 'I(0,1) → II(2,3)' && a.assur.groups[0].vid === 1, a.formula);
+    check('Theory four-bar: links table classified (кривошип/шатун/коромысло)', ['кривошип', 'шатун', 'коромысло', 'стойка'].every(w => txt.includes(w)) && (await page.$$('#thBody table')).length >= 3);
+    check('Theory four-bar: Grashof verdict shown', txt.includes('Грасгофа') && txt.includes('кривошипно-коромысловый'));
+    await page.screenshot({ path: path.join(shots, '16-theory-fourbar.png') });
+    const dl = page.waitForEvent('download'); await page.click('#thCsv'); const d = await dl;
+    const csv = fs.readFileSync(await d.path(), 'utf8');
+    check('Theory CSV export: links, pairs and Assur sections', csv.includes('Звенья') && csv.includes('Кинематические пары') && csv.includes('I(0,1) → II(2,3)'), d.suggestedFilename());
+    await page.emulateMedia({ media: 'print' }); await page.waitForTimeout(150);
+    check('Theory print view hides the editor', !(await page.isVisible('#cv')) && await page.isVisible('#thBody'));
+    await page.screenshot({ path: path.join(shots, '17-theory-print.png'), fullPage: true });
+    await page.emulateMedia({ media: 'screen' });
+  }
+  for (const [k, shot, test] of [
+    ['crankslider', '18-theory-crankslider', a => a.assur.groups.length === 1 && a.assur.groups[0].vid === 2],
+    ['watt', '19-theory-watt', a => a.assur.groups.length === 2 && a.assur.cls === 2],
+    ['kulisa', '20-theory-kulisa', a => a.assur.groups[0].vid === 3 && a.links.some(l => l.type === 'stone')],
+    ['planetary', '21-theory-planetary', a => a.p4 === 2 && a.assur.substitute && a.assur.ok],
+    ['camTrans', '22-theory-cam', a => a.p4 === 1 && a.links.some(l => l.type === 'cam') && a.links.some(l => l.type === 'follower')],
+  ]) {
+    await page.selectOption('#preset', k); await page.waitForTimeout(450);
+    const a = await page.evaluate(() => window.__app.theory());
+    const shown = await page.textContent('#thBody');
+    check(`Theory ${k}: live update, structure ${a.formula}`, test(a) && shown.includes(String(a.links.at(-1).name)));
+    await page.screenshot({ path: path.join(shots, shot + '.png') });
+  }
+  await page.click('#theory [data-tab=ref]'); await page.waitForTimeout(250);
+  await page.evaluate(() => document.querySelectorAll('#thBody details').forEach(d => { d.open = ['grashof', 'cam'].includes(d.dataset.art); }));
+  check('Theory reference: 7 articles with KaTeX formulas', (await page.$$('#thBody details')).length === 7 && (await page.$$('#thBody .katex')).length > 10);
+  await page.screenshot({ path: path.join(shots, '23-theory-reference.png') });
+  await page.selectOption('#lang', 'en'); await page.waitForTimeout(250);
+  check('Theory reference in EN', (await page.textContent('#theory')).includes('Grashof condition'));
+  await page.selectOption('#lang', 'ru');
+  await page.click('#thClose');
 
   // --- английский ---
   await page.selectOption('#lang', 'en');

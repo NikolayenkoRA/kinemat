@@ -8,11 +8,14 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node tests/solver.test.mjs",
+    "test": "node tests/solver.test.mjs && node tests/theory.test.mjs",
     "e2e": "node tests/e2e.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "vite": "^8.3.4"
+  },
+  "dependencies": {
+    "katex": "^0.16.47"
   }
 }
