@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Kinemat — редактор и симулятор плоских механизмов</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M6 26 L12 8 L26 14 L24 26' stroke='%232563eb' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='6' cy='26' r='3' fill='%23111'/%3E%3Ccircle cx='24' cy='26' r='3' fill='%23111'/%3E%3Ccircle cx='12' cy='8' r='3' fill='%23fff' stroke='%23111'/%3E%3Ccircle cx='26' cy='14' r='3' fill='%23fff' stroke='%23111'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">⚙</span> <span data-i18n="brand">Kinemat</span></div>
+  <div class="seg" id="modes">
+    <button data-mode="edit" data-i18n="modeEdit">Редактор</button>
+    <button data-mode="sim" data-i18n="modeSim">Симуляция</button>
+    <button data-mode="drag" data-i18n="modeDrag">Свободное перемещение</button>
+  </div>
+  <div class="spacer"></div>
+  <select id="lang" aria-label="language"><option value="ru">RU</option><option value="en">EN</option></select>
+</header>
+<div class="main">
+  <nav class="tools" id="tools">
+    <button data-tool="select" data-i18n-title="toolSelect"><svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z"/></svg></button>
+    <button data-tool="joint" data-i18n-title="toolJoint"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/></svg></button>
+    <button data-tool="link" data-i18n-title="toolLink"><svg viewBox="0 0 24 24"><path d="M5 18L19 6"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="6" r="2.5"/></svg></button>
+    <button data-tool="ground" data-i18n-title="toolGround"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M12 11l-5 7h10z M5 21l2-3 M9 21l2-3 M13 21l2-3 M17 21l2-3"/></svg></button>
+    <button data-tool="slider" data-i18n-title="toolSlider"><svg viewBox="0 0 24 24"><rect x="7" y="8" width="10" height="7" rx="1"/><path d="M2 18h20"/></svg></button>
+    <button data-tool="gear" data-i18n-title="toolGear"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/><circle cx="12" cy="12" r="7"/></svg></button>
+    <button data-tool="mesh" data-i18n-title="toolMesh"><svg viewBox="0 0 24 24"><circle cx="7.5" cy="12" r="5"/><circle cx="17.5" cy="12" r="4"/><path d="M12.5 10v4"/></svg></button>
+    <button data-tool="cam" data-i18n-title="toolCam"><svg viewBox="0 0 24 24"><path d="M12 21c-5 0-8-3.5-8-8s4-9 8-11c4 2 8 6.5 8 11s-3 8-8 8z"/><circle cx="12" cy="13" r="1.6"/></svg></button>
+    <button data-tool="delete" data-i18n-title="toolDelete"><svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/></svg></button>
+    <hr />
+    <button id="btnUndo" data-i18n-title="undo"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3"/></svg></button>
+    <button id="btnRedo" data-i18n-title="redo"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3"/></svg></button>
+    <button id="btnSnap" class="on" data-i18n-title="snap"><svg viewBox="0 0 24 24"><path d="M4 4v16M10 4v16M16 4v16M4 4h16M4 10h16M4 16h16" stroke-width="1"/><circle cx="16" cy="10" r="2.5"/></svg></button>
+    <button id="btnFit" data-i18n-title="fit"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
+  </nav>
+  <div class="stage" id="stage">
+    <canvas id="cv"></canvas>
+    <div class="badge" id="dofBadge"></div>
+    <div class="simctl" id="simCtl">
+    <button id="btnPlay" class="primary">▶ <span data-i18n="play">Пуск</span></button>
+    <button id="btnStep" data-i18n-title="step">⏭</button>
+    <button id="btnReset" data-i18n-title="reset">⟲</button>
+    <label class="rng"><span data-i18n="speed">Скорость</span> <input id="speed" type="range" min="0.1" max="4" step="0.1" value="1" /><b id="speedVal">1×</b></label>
+    <label class="chk"><input type="checkbox" id="chkVel" checked /> <span data-i18n="showVel">Скорости</span></label>
+    <label class="chk"><input type="checkbox" id="chkAcc" /> <span data-i18n="showAcc">Ускорения</span></label>
+    <label class="chk"><input type="checkbox" id="chkTr" checked /> <span data-i18n="showTraces">Траектории</span></label>
+    <button id="btnClearTr" data-i18n="clearTraces">Очистить траектории</button>
+    <button id="btnApply" data-i18n="applyPose">Применить позу</button>
+  </div>
+    <div class="hint" id="hint"></div>
+    <div class="toast" id="toast"></div>
+    <div class="linkbar" id="linkBar"><button id="btnLinkDone" class="primary" data-i18n="finish">Готово</button><button id="btnLinkCancel" data-i18n="cancel">Отмена</button></div>
+  </div>
+  <aside class="side">
+    <section><h3 data-i18n="props">Свойства</h3><div id="props"></div></section>
+    <section><h3 data-i18n="mechanism">Механизм</h3><div id="mechInfo"></div><div id="driverPanel"></div></section>
+    <section>
+      <h3 data-i18n="presets">Примеры</h3>
+      <select id="preset"></select>
+      <h3 data-i18n="file">Файл</h3>
+      <div class="row wrap">
+        <button id="btnNew" data-i18n="newMech">Новый</button>
+        <button id="btnSave" data-i18n="saveJson">Сохранить JSON</button>
+        <button id="btnOpen" data-i18n="openJson">Открыть JSON</button>
+        <input type="file" id="fileIn" accept=".json,application/json" hidden />
+      </div>
+      <div class="muted small">💾 <span data-i18n="saved">Автосохранение</span></div>
+      <label class="row small"><span data-i18n="grid">Шаг сетки, мм</span><input id="gridStep" type="number" min="0.1" step="0.5" value="5" style="width:70px" /></label>
+    </section>
+  </aside>
+</div>
+<section class="chartPanel" id="chartPanel">
+  <div class="chartHead">
+    <b data-i18n="chart">Анализ</b>
+    <span id="chartTarget" class="muted"></span>
+    <select id="chartOut"></select>
+    <button id="btnChart" data-i18n="build">Построить</button>
+    <button id="btnCsv" data-i18n="csv">CSV</button>
+    <span id="chartMsg" class="muted small"></span>
+  </div>
+  <canvas id="chart"></canvas>
+</section>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

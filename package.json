@@ -1,0 +1,18 @@
+{
+  "name": "kinemat",
+  "version": "1.0.0",
+  "description": "Редактор и симулятор плоских рычажных механизмов в браузере",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node tests/solver.test.mjs",
+    "e2e": "node tests/e2e.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "vite": "^8.3.4"
+  }
+}
