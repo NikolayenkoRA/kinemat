@@ -41,7 +41,7 @@ const maxLenErr = (m, s, X) => Math.max(...pairs(m, s).map(([i, j]) => Math.abs(
 for (const k of PRESET_KEYS) {
   const m = PRESETS[k](), s = compile(m), r = s.driver.kind === 'lin' ? sweep(s, s.X0, s.theta0, 1, 40, 0.5) : sweep(s, s.X0, s.theta0, 2, 360);
   const err = Math.max(...r.frames.map(f => maxLenErr(m, s, f.X)));
-  check(`preset ${k}: W=${dof(m).W}, full cycle, lengths kept`, dof(m).W === 1 && r.ok && err < 1e-6, `err=${err.toExponential(2)}`);
+  check(`preset ${k}: W=${dof(m).W}, full cycle${m.walls?.length ? ' (or stop at wall)' : ''}, lengths kept`, dof(m).W === 1 && (r.ok || (m.walls?.length && r.wall)) && err < 1e-6, `err=${err.toExponential(2)}`);
 }
 // 4. Свободное перемещение сохраняет связи
 function dragTest(key, jointName, path) {

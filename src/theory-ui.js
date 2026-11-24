@@ -68,6 +68,7 @@ function analysisHtml(a, m) {
   if (Object.entries(jc).some(([, c]) => c >= 2)) notes.push(tt('compoundNote'));
   if (a.Wreal != null) notes.push(tex(a.Wreal === a.W ? tt('rankOk', { r: a.Wreal }) : a.Wreal > a.W ? tt('rankRed', { r: a.Wreal, w: a.W, q: a.Wreal - a.W }) : tt('rankPass', { r: a.Wreal, w: a.W, q: a.W - a.Wreal })));
   if ((m.cams || []).some(c => c.rr > 0)) notes.push(tex(tt('rollerNote')));
+  if ((m.walls || []).length) notes.push(tt('wallNote', { n: m.walls.length }));
   H.push(`<ul class="th-notes">${notes.map(x => `<li>${x}</li>`).join('')}</ul></section>`);
   // 2–3. Таблицы
   H.push(`<section><h3>2. ${tt('secLinks')}</h3>${table(T.links)}`);
@@ -113,7 +114,7 @@ function refHtml(a) {
 }
 
 function current() {
-  const m = getMech(), key = JSON.stringify([m.joints, m.links, m.gears, m.cams, m.driver]);
+  const m = getMech(), key = JSON.stringify([m.joints, m.links, m.gears, m.cams, m.driver, m.walls]);
   if (cache.key !== key) { let a = null; try { a = analyze(m); } catch (e) { console.warn('theory', e); } cache = { key, a }; }
   return { m, a: cache.a };
 }

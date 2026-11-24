@@ -276,6 +276,76 @@ try {
   // Пример «Г-образный рычаг» + Теория: одно звено BO₂C
   await page.selectOption('#preset', 'bellcrank'); await page.waitForTimeout(250);
   await page.screenshot({ path: path.join(shots, '29-bellcrank-editor.png') });
+  // --- v5: стены / пол ---
+  await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200);
+  {
+    const W2S = ([x, y]) => page.evaluate(([x, y]) => window.__app.toS(x, y), [x, y]);
+    canvasBox = await page.locator('#cv').boundingBox();
+    check('wall tool has a clear tooltip «Стена / пол (W)»', (await page.getAttribute('[data-tool=wall]', 'title')) === 'Стена / пол (W)');
+    await page.keyboard.press('w');
+    check('hotkey W selects the wall tool', (await app(() => window.__app.st.tool)) === 'wall');
+    for (const p of [[-40, -15], [60, -15], [130, -15]]) { const [x, y] = await W2S(p); await page.mouse.click(canvasBox.x + x, canvasBox.y + y); }
+    await page.keyboard.press('Enter'); await page.waitForTimeout(80);
+    const w1 = await app(() => window.__app.mech.walls);
+    check('wall drawn as a polyline (3 points), selected', w1.length === 1 && w1[0].pts.length === 3 && (await app(() => window.__app.selCount())) === 1, JSON.stringify(w1[0]?.pts));
+    check('walls do not change W', (await page.textContent('#dofBadge')).includes('W = 1'));
+    await app(() => document.querySelector('#toast').classList.remove('show')); await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(shots, '31-wall-tool.png') });
+    await page.keyboard.press('Escape');
+    check('Esc after the wall returns to «Выбор»', (await app(() => window.__app.st.tool)) === 'select');
+    // выделение, удаление, отмена
+    const [mx, my] = await W2S([100, -15]);
+    await page.mouse.click(canvasBox.x + mx, canvasBox.y + my); await page.waitForTimeout(60);
+    check('click selects the wall, properties show its points', (await page.locator('#props .wallpts input').count()) === 6);
+    await page.keyboard.press('Delete'); await page.waitForTimeout(60);
+    const nDel = await app(() => window.__app.mech.walls.length);
+    await page.keyboard.press('Control+z'); await page.waitForTimeout(60);
+    check('Delete removes the wall, Ctrl+Z restores it', nDel === 0 && (await app(() => window.__app.mech.walls.length)) === 1);
+    // правка конца стены перетаскиванием вершины
+    await page.mouse.click(canvasBox.x + mx, canvasBox.y + my); await page.waitForTimeout(60);
+    const [vx, vy] = await W2S([130, -15]);
+    await page.mouse.move(canvasBox.x + vx, canvasBox.y + vy); await page.mouse.down(); await page.mouse.move(canvasBox.x + vx, canvasBox.y + vy - 40, { steps: 3 }); await page.mouse.up();
+    const end = await app(() => window.__app.mech.walls[0].pts[2]);
+    check('wall end point can be dragged', end[0] === 130 && end[1] > -10, JSON.stringify(end));
+    // свободное перемещение в стену: кривошип не проходит сквозь неё
+    await page.click('[data-mode=drag]'); await page.waitForTimeout(60);
+    const aId = await jid('A'); const [ax, ay] = await scr(aId);
+    await page.mouse.move(canvasBox.x + ax, canvasBox.y + ay); await page.mouse.down();
+    let minY = Infinity;
+    for (const p of [[-10, 0], [-20, -30], [0, -60], [20, -60], [30, -40]]) { const [x, y] = await W2S(p); await page.mouse.move(canvasBox.x + x, canvasBox.y + y, { steps: 3 }); await page.waitForTimeout(40); minY = Math.min(minY, await app(id => window.__app.P(id)[1], aId)); }
+    const contact = await app(() => !!window.__app.sim.contact);
+    await page.screenshot({ path: path.join(shots, '33-drag-against-wall.png') });
+    await page.mouse.up();
+    check('free move: dragging the crank into the wall stops at the wall', minY >= -15 - 1e-6 && minY < -12 && contact, `min y of A = ${minY.toFixed(3)} (wall at −15)`);
+    await page.click('[data-mode=edit]');
+  }
+  // пример «Четырёхзвенник на полу»: двигатель упирается в пол
+  await page.selectOption('#preset', 'floorstop'); await page.waitForTimeout(200);
+  {
+    await page.click('[data-mode=sim]'); await page.click('#btnPlay');
+    let hit = false, minY = Infinity, toastTxt = '';
+    for (let k = 0; k < 240 && !hit; k++) {
+      await page.waitForTimeout(50);
+      const r = await app(() => { const a = window.__app, ys = a.mech.joints.map(j => a.P(j.id)[1]); return { c: !!a.sim.contact, y: Math.min(...ys), toast: document.querySelector('#toast').textContent }; });
+      minY = Math.min(minY, r.y); if (r.c) { hit = true; toastTxt = r.toast; }
+    }
+    await page.screenshot({ path: path.join(shots, '32-floor-contact-sim.png') });
+    await page.waitForTimeout(600);
+    const d = await app(() => window.__app.sim.dir);
+    await page.click('#btnPlay');
+    check('simulation: crank hits the floor, message «Упор в стену», contact highlighted', hit && toastTxt.includes('Упор в стену') && minY > -1e-6, `toast «${toastTxt}», min y ${minY.toExponential(1)}`);
+    check('simulation: motor reverses after the contact (mode «реверс»)', d === -1);
+    await page.click('[data-mode=edit]');
+  }
+  // «Добавить пол» и Теория
+  await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200); await page.keyboard.press('Escape');
+  await page.click('#props button[data-act=addFloor]'); await page.waitForTimeout(80);
+  const fl = await app(() => window.__app.mech.walls);
+  check('«Добавить пол» adds a horizontal floor under the mechanism', fl.length === 1 && fl[0].pts[0][1] === fl[0].pts[1][1] && fl[0].pts[0][1] < 0);
+  await page.screenshot({ path: path.join(shots, '34-add-floor.png') });
+  await page.click('#btnTheory'); await page.waitForTimeout(400);
+  check('Theory mentions walls as unilateral constraints, counts unchanged', (await page.textContent('#thBody')).includes('односторонние ограничения') && (await app(() => window.__app.theory().n)) === 3);
+  await page.click('#thClose');
   await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200);
 
   // --- Теория ---

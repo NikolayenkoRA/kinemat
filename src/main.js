@@ -1,6 +1,7 @@
 import { t, lang, setLang, applyStatic } from './i18n.js';
 import { initTheory, refreshTheory, toggleTheory, theoryAnalysis, setTheoryTab } from './theory-ui.js';
-import { emptyMech, addJoint, addLink, deleteItems, setDriver, setLinearDriver, fixDriver, dof, jointById, linkById, linksOfJoint, camById, addCam, rebuildCam, cleanup, newId, validate, mergeLinks, chainBars } from './model.js';
+import { emptyMech, addJoint, addLink, deleteItems, setDriver, setLinearDriver, fixDriver, dof, jointById, linkById, linksOfJoint, camById, addCam, rebuildCam, cleanup, newId, validate, mergeLinks, chainBars, addWall, wallById } from './model.js';
+import { floorFor } from './walls.js';
 import { compile, advance, tangent, dragTo, dragPath, pointOf, localGrab, driverAngle, sweep, angCont, railFrame, saveAngles, loadAngles } from './solver.js';
 import { camProfile, camLaw, LAWS, camBetas } from './cam.js';
 import { PRESETS, PRESET_KEYS } from './presets.js';
@@ -15,7 +16,7 @@ const D2R = Math.PI / 180;
 
 let mech = loadLocal() || PRESETS.fourbar();
 const st = {
-  mode: 'edit', tool: 'select', selSet: new Map(), hover: null, draft: [], cursor: null, meshFirst: null, space: false,
+  mode: 'edit', tool: 'select', selSet: new Map(), hover: null, draft: [], wdraft: [], cursor: null, meshFirst: null, space: false,
   view: { x: 0, y: 0, s: 4 }, snap: true, grid: 5, undo: [], redo: [], geom: 0,
 };
 const sim = { sys: null, ver: -1, X: null, theta: 0, dir: 1, playing: false, mul: 1, traces: new Map(), V: null, A: null, Tprev: null, thPrev: null, grab: null, target: null };
@@ -27,7 +28,7 @@ const pointers = new Map();
 const key = it => it.kind + ':' + it.id;
 const isSel = (kind, id) => st.selSet.has(kind + ':' + id);
 const selItems = () => [...st.selSet.values()].filter(it => exists(it));
-const exists = it => it.kind === 'joint' ? !!jointById(mech, it.id) : it.kind === 'link' ? !!linkById(mech, it.id) : !!camById(mech, it.id);
+const exists = it => it.kind === 'joint' ? !!jointById(mech, it.id) : it.kind === 'link' ? !!linkById(mech, it.id) : it.kind === 'wall' ? !!wallById(mech, it.id) : !!camById(mech, it.id);
 function primary() { const a = selItems(); return a.length === 1 ? a[0] : null; }
 function selectOnly(it) { st.selSet.clear(); if (it) st.selSet.set(key(it), it); }
 function toggleSel(it) { const k = key(it); st.selSet.has(k) ? st.selSet.delete(k) : st.selSet.set(k, it); }
@@ -45,7 +46,7 @@ function setMech(m) { pushUndo(); mech = m; selectOnly(null); st.draft = []; st.
 function ensureSys() {
   if (sim.ver !== st.geom || !sim.sys) {
     sim.sys = compile(mech); sim.ver = st.geom; sim.X = sim.sys.X0.slice(); sim.theta = sim.sys.theta0;
-    sim.dir = mech.driver?.dir ?? 1; sim.traces.clear(); sim.V = sim.A = sim.Tprev = null; sim.playing = false;
+    sim.dir = mech.driver?.dir ?? 1; sim.traces.clear(); sim.V = sim.A = sim.Tprev = sim.contact = null; sim.playing = false;
     updateV();
   }
   return sim.sys;
@@ -197,21 +198,59 @@ function hitLink(sx, sy) {
   return null;
 }
 function hitCam(sx, sy) { for (const c of mech.cams || []) { const pts = camScreenPts(c); if (pts && inPoly([sx, sy], pts)) return c; } return null; }
+function hitWall(sx, sy, tol = 8) {
+  for (const w of mech.walls || []) for (let k = 1; k < w.pts.length; k++) if (segDist([sx, sy], toS(...w.pts[k - 1]), toS(...w.pts[k])) < tol) return w;
+  return null;
+}
+// вершина выделенной стены под курсором (для правки концов)
+function hitWallVertex(sx, sy) {
+  for (const w of mech.walls || []) if (isSel('wall', w.id)) for (let k = 0; k < w.pts.length; k++) { const [x, y] = toS(...w.pts[k]); if (Math.hypot(x - sx, y - sy) < 9) return { w, k }; }
+  return null;
+}
 function hitAny(sx, sy) {
   const j = hitJoint(sx, sy); if (j) return { kind: 'joint', id: j.id };
   const l = hitLink(sx, sy);
   if (l && !(mech.cams || []).some(c => c.cam === l.id)) return { kind: 'link', id: l.id };
   const c = hitCam(sx, sy); if (c) return { kind: 'cam', id: c.id };
-  return l ? { kind: 'link', id: l.id } : null;
+  if (l) return { kind: 'link', id: l.id };
+  const w = hitWall(sx, sy); return w ? { kind: 'wall', id: w.id } : null;
 }
 
 // ---------- рисование ----------
+// Стена: толстая линия + штриховка с «твёрдой» стороны
+function wallPath(pts, side, col, lw, hatch = true) {
+  const S = pts.map(p => toS(...p));
+  ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); S.forEach((p, k) => (k ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.stroke();
+  if (!hatch) return;
+  ctx.lineWidth = 1.3; ctx.beginPath();
+  for (let k = 1; k < S.length; k++) {
+    const [ax, ay] = S[k - 1], [bx, by] = S[k], L = Math.hypot(bx - ax, by - ay); if (L < 1) continue;
+    const tx = (bx - ax) / L, ty = (by - ay) / L, nx = -ty * side, ny = tx * side; // экран: y вниз — справа от обхода в мировых осях
+    for (let d = 4; d < L; d += 9) { const x = ax + tx * d, y = ay + ty * d; ctx.moveTo(x, y); ctx.lineTo(x + 9 * nx - 6 * tx, y + 9 * ny - 6 * ty); }
+  }
+  ctx.stroke();
+}
+function drawWalls(editing) {
+  const now = performance.now(), hot = sim.contact && now - sim.contact.t < 1800 && st.mode !== 'edit' ? sim.contact : null;
+  for (const w of mech.walls || []) {
+    const sel = isSel('wall', w.id), hov = st.hover?.kind === 'wall' && st.hover.id === w.id;
+    if (sel) wallPath(w.pts, w.side, 'rgba(37,99,235,.25)', 12, false);
+    wallPath(w.pts, w.side, hot && hot.wall === w.id ? '#dc2626' : sel || hov ? '#1d4ed8' : '#334155', 3.2);
+    if (sel && editing) { ctx.fillStyle = '#fff'; ctx.strokeStyle = '#1d4ed8'; ctx.lineWidth = 2; for (const p of w.pts) { const [x, y] = toS(...p); ctx.beginPath(); ctx.rect(x - 4.5, y - 4.5, 9, 9); ctx.fill(); ctx.stroke(); } }
+  }
+  if (editing && st.tool === 'wall' && st.wdraft.length) {
+    ctx.setLineDash([6, 5]); wallPath(st.cursor ? [...st.wdraft, st.cursor] : st.wdraft, 1, '#2563eb', 2.5); ctx.setLineDash([]);
+  }
+  if (hot) { const [x, y] = toS(hot.x, hot.y), r = 10 + 4 * Math.sin(now / 90); ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke(); }
+}
 function draw() {
   const w = W(), h = H();
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#fbfcfd'; ctx.fillRect(0, 0, w, h);
   drawGrid(w, h);
   const g = geo(), editing = st.mode === 'edit';
+  drawWalls(editing);
   // направляющие ползунов
   const camF = new Set((mech.cams || []).filter(c => c.kind !== 'rocker').map(c => c.follower));
   for (const j of mech.joints) if (j.type === 'P' && !camF.has(j.id)) {
@@ -392,7 +431,11 @@ function stepSim(dAbs) {
   }
   const r = Math.abs(d) > 1e-12 ? advance(s, sim.X, sim.theta, d) : { ok: true, X: sim.X, theta: sim.theta };
   sim.X = r.X; sim.theta = r.theta;
-  if (!r.ok) {
+  if (!r.ok && r.wall) { // упор в стену: остановка или реверс
+    sim.contact = { ...r.wall, t: performance.now() };
+    if ((mech.driver.lock ?? 'reverse') === 'reverse') { sim.dir = -sim.dir; sim.Tprev = null; toast(t('wallReverseMsg')); }
+    else { sim.playing = false; syncSimUi(); toast(t('wallStopMsg')); }
+  } else if (!r.ok) {
     if ((mech.driver.lock ?? 'reverse') === 'reverse') { sim.dir = -sim.dir; sim.Tprev = null; toast(t('lockReverseMsg')); }
     else { sim.playing = false; syncSimUi(); toast(t('lockStopMsg')); }
   } else if (bound) { sim.dir = -sim.dir; sim.Tprev = null; }
@@ -404,6 +447,7 @@ function grabStep(tmax) {
   const before = pointOf(sim.X, sim.grab), wpt = sim.target;
   sim.X = dragPath(sim.sys, sim.X, sim.grab, wpt[0], wpt[1], X => { sim.X = X; recordTraces(); }, 0.02 * sim.sys.scale, tmax);
   const after = pointOf(sim.X, sim.grab);
+  if (sim.sys.contact) { sim.contact = { ...sim.sys.contact, t: performance.now() }; sim.sys.contact = null; }
   sim.grabLag = Math.hypot(after[0] - wpt[0], after[1] - wpt[1]) > 1e-4 * sim.sys.scale && Math.hypot(after[0] - before[0], after[1] - before[1]) > 1e-4 * sim.sys.scale;
   if (sim.sys.driver) { const th = driverAngle(sim.sys, sim.X); sim.theta = sim.sys.driver.kind === 'lin' ? th : sim.theta + Math.atan2(Math.sin(th - sim.theta), Math.cos(th - sim.theta)); }
   sim.V = sim.A = sim.Tprev = null; recordTraces(); updateCoordInputs();
@@ -456,7 +500,7 @@ function jointsOfSelection() {
   for (const it of selItems()) {
     if (it.kind === 'joint') s.add(it.id);
     else if (it.kind === 'link') linkById(mech, it.id).joints.forEach(id => s.add(id));
-    else { const c = camById(mech, it.id); linkById(mech, c.cam).joints.forEach(id => s.add(id)); s.add(c.follower); if (c.pivot) s.add(c.pivot); }
+    else if (it.kind === 'cam') { const c = camById(mech, it.id); linkById(mech, c.cam).joints.forEach(id => s.add(id)); s.add(c.follower); if (c.pivot) s.add(c.pivot); }
   }
   return [...s];
 }
@@ -464,13 +508,19 @@ function editDown(sx, sy, wpt, e) {
   const tool = st.tool, [gx, gy] = snapW(...wpt), mod = e.shiftKey || e.ctrlKey || e.metaKey;
   const it = hitAny(sx, sy), j = it?.kind === 'joint' ? jointById(mech, it.id) : null, l = it?.kind === 'link' ? linkById(mech, it.id) : null;
   if (tool === 'select') {
+    const wv = !mod && hitWallVertex(sx, sy);
+    if (wv) { action = { type: 'wallpt', w: wv.w, k: wv.k, pushed: false }; return; }
     if (it && mod) { toggleSel(it); renderPanels(); return; }
     if (it) {
       if (!isSel(it.kind, it.id)) selectOnly(it);
-      const ids = jointsOfSelection();
-      action = { type: 'move', ids, start: wpt, orig: ids.map(id => { const q = jointById(mech, id); return [q.x, q.y]; }), pushed: false, anchor: j ? [j.x, j.y] : null };
+      const ids = jointsOfSelection(), ws = selItems().filter(i => i.kind === 'wall').map(i => wallById(mech, i.id));
+      action = { type: 'move', ids, start: wpt, orig: ids.map(id => { const q = jointById(mech, id); return [q.x, q.y]; }), walls: ws.map(w => ({ w, pts: w.pts.map(p => [...p]) })), pushed: false, anchor: j ? [j.x, j.y] : null };
       renderPanels(); autoChart();
     } else action = { type: 'box', sx0: sx, sy0: sy, sx, sy, add: mod };
+  } else if (tool === 'wall') {
+    const p = [gx, gy], last = st.wdraft.at(-1);
+    if (!last || Math.hypot(last[0] - p[0], last[1] - p[1]) > 1e-9) st.wdraft.push(p);
+    syncLinkBar();
   } else if (tool === 'joint') {
     pushUndo(); const nj = addJoint(mech, gx, gy);
     if (l) { l.joints.push(nj.id); nj.trace = true; }
@@ -526,7 +576,13 @@ function finishLink() {
   if (st.draft.length >= 2) { if (!st.draftCreated) pushUndo(); const l = addLink(mech, st.draft, st.tool === 'bent' && st.draft.length >= 3 ? chainBars(st.draft) : null); selectOnly({ kind: 'link', id: l.id }); }
   st.draft = []; st.draftCreated = false; st.draftNew = []; changed(); syncLinkBar();
 }
+function finishWall() {
+  if (st.wdraft.length >= 2) { pushUndo(); const w = addWall(mech, st.wdraft); selectOnly({ kind: 'wall', id: w.id }); st.wdraft = []; changed(); }
+  else st.wdraft = [];
+  syncLinkBar();
+}
 function cancelLink() {
+  st.wdraft = [];
   // шарниры, поставленные только что для недостроенного звена, убираем
   const tmp = (st.draftNew || []).filter(id => !linksOfJoint(mech, id).length);
   st.draft = []; st.draftCreated = false; st.draftNew = []; st.meshFirst = null;
@@ -546,6 +602,10 @@ function finishBox(a) {
     if (l.gear) { const g = gearScreen(l); const gr = { x0: g.x - g.r, x1: g.x + g.r, y0: g.y - g.r, y1: g.y + g.r }; if (win) hit = hit && gr.x0 >= r.x0 && gr.x1 <= r.x1 && gr.y0 >= r.y0 && gr.y1 <= r.y1; }
     if (hit) st.selSet.set('link:' + l.id, { kind: 'link', id: l.id });
   }
+  for (const w of mech.walls || []) {
+    const pts = w.pts.map(p => toS(...p));
+    if (win ? pts.every(p => inRect(p, r)) : pts.some(p => inRect(p, r)) || pts.slice(1).some((p, k) => segRect(pts[k], p, r))) st.selSet.set('wall:' + w.id, { kind: 'wall', id: w.id });
+  }
   for (const c of mech.cams || []) {
     const pts = camScreenPts(c); if (!pts) continue;
     if (win ? pts.every(p => inRect(p, r)) : pts.some(p => inRect(p, r)) || pts.some((p, i) => segRect(p, pts[(i + 1) % pts.length], r))) st.selSet.set('cam:' + c.id, { kind: 'cam', id: c.id });
@@ -561,9 +621,10 @@ function selectAll() {
   mech.joints.forEach(j => st.selSet.set('joint:' + j.id, { kind: 'joint', id: j.id }));
   mech.links.forEach(l => st.selSet.set('link:' + l.id, { kind: 'link', id: l.id }));
   (mech.cams || []).forEach(c => st.selSet.set('cam:' + c.id, { kind: 'cam', id: c.id }));
+  (mech.walls || []).forEach(w => st.selSet.set('wall:' + w.id, { kind: 'wall', id: w.id }));
   renderPanels();
 }
-cv.addEventListener('dblclick', () => { if (st.mode === 'edit' && (st.tool === 'link' || st.tool === 'bent') && st.draft.length >= 2) finishLink(); });
+cv.addEventListener('dblclick', () => { if (st.mode === 'edit' && st.tool === 'wall') { finishWall(); return; } if (st.mode === 'edit' && (st.tool === 'link' || st.tool === 'bent') && st.draft.length >= 2) finishLink(); });
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = evPos(e);
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [sx, sy]);
@@ -586,7 +647,11 @@ cv.addEventListener('pointermove', e => {
     if (!action.pushed) { if (Math.hypot(dx, dy) * st.view.s < 2) return; pushUndo(); action.pushed = true; }
     if (action.anchor) { const [ax, ay] = snapW(action.anchor[0] + dx, action.anchor[1] + dy); dx = ax - action.anchor[0]; dy = ay - action.anchor[1]; } else [dx, dy] = snapW(dx, dy);
     action.ids.forEach((id, k) => { const q = jointById(mech, id); q.x = action.orig[k][0] + dx; q.y = action.orig[k][1] + dy; });
+    (action.walls || []).forEach(({ w, pts }) => { w.pts = pts.map(p => [p[0] + dx, p[1] + dy]); });
     st.geom++; chart = null; updateCoordInputs();
+  } else if (action.type === 'wallpt') {
+    if (!action.pushed) { pushUndo(); action.pushed = true; }
+    action.w.pts[action.k] = snapW(...wpt); st.geom++; chart = null; renderPanels();
   } else if (action.type === 'grab') {
     sim.target = wpt; grabStep(40);
   }
@@ -594,7 +659,7 @@ cv.addEventListener('pointermove', e => {
 function endPointer(e) {
   pointers.delete(e.pointerId);
   if (!action) return;
-  if (action.type === 'move' && action.pushed) changed();
+  if ((action.type === 'move' || action.type === 'wallpt') && action.pushed) changed();
   if (action.type === 'box') finishBox(action);
   if (action.type === 'grab') { sim.grab = null; updateV(); }
   action = null;
@@ -614,15 +679,16 @@ window.addEventListener('keydown', e => {
   else if (ctrl && (k === 'y' || k === 'н')) { e.preventDefault(); redo(); }
   else if (ctrl && (k === 'a' || k === 'ф')) { if (st.mode === 'edit') { e.preventDefault(); selectAll(); } }
   else if (k === 'enter' && (st.tool === 'link' || st.tool === 'bent')) finishLink();
+  else if (k === 'enter' && st.tool === 'wall') finishWall();
   else if (k === 'escape') escape();
   else if ((k === 'delete' || k === 'backspace') && st.mode === 'edit') { e.preventDefault(); deleteSelection(); }
   else if (k === ' ') { e.preventDefault(); if (st.mode === 'sim') togglePlay(); else st.space = true; }
-  else if (st.mode === 'edit' && !ctrl) { const map = { v: 'select', j: 'joint', l: 'link', b: 'bent', g: 'ground', s: 'slider', z: 'gear', m: 'mesh', k: 'cam', d: 'delete' }; if (map[k]) setTool(map[k]); }
+  else if (st.mode === 'edit' && !ctrl) { const map = { v: 'select', j: 'joint', l: 'link', b: 'bent', w: 'wall', g: 'ground', s: 'slider', z: 'gear', m: 'mesh', k: 'cam', d: 'delete' }; if (map[k]) setTool(map[k]); }
 });
 
 // Esc: прервать начатое построение и вернуться к инструменту «Выбор»; если он уже активен — снять выделение
 function escape() {
-  const busy = st.draft.length || st.meshFirst || action;
+  const busy = st.draft.length || st.wdraft.length || st.meshFirst || action;
   cancelLink(); if (action?.type === 'box') action = null;
   if (st.mode === 'edit' && st.tool !== 'select') { setTool('select'); if (document.activeElement?.closest?.('#tools')) document.activeElement.blur(); }
   else if (!busy) selectOnly(null);
@@ -644,7 +710,7 @@ function syncHint() {
   if (st.mode === 'edit' && st.tool === 'mesh' && st.meshFirst) k = 'hintMesh2';
   $('#hint').textContent = t(k);
 }
-function syncLinkBar() { $('#linkBar').classList.toggle('show', st.mode === 'edit' && (st.tool === 'link' || st.tool === 'bent') && st.draft.length > 0); }
+function syncLinkBar() { $('#linkBar').classList.toggle('show', st.mode === 'edit' && ((st.tool === 'link' || st.tool === 'bent') && st.draft.length > 0 || st.tool === 'wall' && st.wdraft.length > 0)); }
 function syncSimUi() {
   $('#simCtl').classList.toggle('hidden', st.mode === 'edit');
   $('#btnPlay').innerHTML = sim.playing ? `⏸ <span>${t('pause')}</span>` : `▶ <span>${t('play')}</span>`;
@@ -664,12 +730,13 @@ function renderPanels() {
   const pr = $('#props'); let html = '';
   if (items.length > 1) {
     const c = k => items.filter(i => i.kind === k).length;
-    html = `<div class="selcount"><b>${t('selected')}: ${items.length}</b><br><span class="muted small">${t('joints')}: ${c('joint')} · ${t('linksW')}: ${c('link')} · ${t('cams')}: ${c('cam')}</span></div>
+    html = `<div class="selcount"><b>${t('selected')}: ${items.length}</b><br><span class="muted small">${t('joints')}: ${c('joint')} · ${t('linksW')}: ${c('link')} · ${t('cams')}: ${c('cam')}${c('wall') ? ` · ${t('wallsW')}: ${c('wall')}` : ''}</span></div>
       ${ro ? '' : `<div class="row wrap">${c('link') >= 2 ? `<button data-act="merge" class="primary" title="${t('mergeTip')}">${t('merge')}</button>` : ''}<button data-act="delSel" class="danger">${t('delSel')}</button></div><div class="muted small">${t('multiHint')}${c('link') >= 2 ? ' ' + t('mergeHint') : ''}</div>`}`;
   } else if (it?.kind === 'joint') html = jointPanel(jointById(mech, it.id), ro);
   else if (it?.kind === 'link') html = linkPanel(linkById(mech, it.id), ro);
   else if (it?.kind === 'cam') html = camPanel(camById(mech, it.id), ro);
-  else html = `<div class="muted small">${t('nothingSel')}</div>`;
+  else if (it?.kind === 'wall') html = wallPanel(wallById(mech, it.id), ro);
+  else html = `<div class="muted small">${t('nothingSel')}</div>${ro ? '' : `<div class="row wrap" style="margin-top:8px"><button data-act="addFloor" title="${t('addFloorTip')}">${t('addFloor')}</button></div>`}`;
   pr.innerHTML = html;
   const d = dof(mech);
   const note = d.W < 0 ? ` <span class="muted small">(${t('dofOver')})</span>` : d.W === 0 ? ` <span class="muted small">(${t('dofZero')})</span>` : '';
@@ -695,6 +762,11 @@ function renderPanels() {
   } else dh = `<div class="muted small" style="margin-top:8px">${t('noDriver')}</div>`;
   $('#driverPanel').innerHTML = dh;
   syncChartOptions();
+}
+function wallPanel(w, ro) {
+  return `<div class="muted small">${t('wallInfo')}</div><h3>${t('wallPts')}</h3><div class="wallpts">${w.pts.map((p, k) => `<span>${k + 1}</span>${num(`data-wp="${k}|0"`, fmt(p[0]), 0.5, ro)}${num(`data-wp="${k}|1"`, fmt(p[1]), 0.5, ro)}${!ro && w.pts.length > 2 ? `<button data-act="wallDelPt" data-k="${k}" title="${t('del')}">✕</button>` : '<span></span>'}`).join('')}</div>
+    <div class="prop"><span>${t('wallSide')}</span><select data-wside="1" ${ro}>${opt(1, t('sideRight'), w.side)}${opt(-1, t('sideLeft'), w.side)}</select></div>
+    ${ro ? '' : `<div class="row wrap"><button data-act="wallAddPt">${t('wallAddPt')}</button><button data-act="delSel">${t('del')}</button></div>`}`;
 }
 function jointPanel(j, ro) {
   const [x, y] = P(j.id), ls = linksOfJoint(mech, j.id);
@@ -759,6 +831,12 @@ function updateCoordInputs() {
 }
 $('#props').addEventListener('change', e => {
   const el = e.target, it = primary();
+  if ((el.dataset.wp || el.dataset.wside) && it?.kind === 'wall') {
+    const w = wallById(mech, it.id); pushUndo();
+    if (el.dataset.wside) w.side = +el.value < 0 ? -1 : 1;
+    else { const [k, c] = el.dataset.wp.split('|').map(Number); w.pts[k][c] = +el.value || 0; }
+    changed(); return;
+  }
   if (el.dataset.shape && it?.kind === 'link') {
     const l = linkById(mech, it.id); pushUndo();
     if (el.value === 'bent') l.bars = chainBars(l.joints); else delete l.bars;
@@ -804,6 +882,9 @@ $('#props').addEventListener('change', e => {
 $('#props').addEventListener('click', e => {
   const a = e.target.dataset.act; if (!a) return;
   if (a === 'delSel') return deleteSelection();
+  if (a === 'addFloor') {
+    pushUndo(); const w = addWall(mech, floorFor(mech)); selectOnly({ kind: 'wall', id: w.id }); changed(); toast(t('floorAdded'), true); return;
+  }
   if (a === 'merge') {
     const ids = selItems().filter(i => i.kind === 'link').map(i => i.id);
     const r = mergeLinks(JSON.parse(JSON.stringify(mech)), ids); // пробное объединение на копии
@@ -813,6 +894,12 @@ $('#props').addEventListener('click', e => {
   }
   const it = primary(); if (!it) return;
   pushUndo();
+  if (a === 'wallAddPt' || a === 'wallDelPt') {
+    const w = wallById(mech, it.id); if (!w) return;
+    if (a === 'wallDelPt') w.pts.splice(+e.target.dataset.k, 1);
+    else { const p = w.pts.at(-1), q = w.pts.at(-2); w.pts.push([p[0] + (p[0] - q[0]) * 0.5, p[1] + (p[1] - q[1]) * 0.5]); }
+    changed(); return;
+  }
   if (a === 'toggleFix') {
     const j = jointById(mech, it.id); if (!j) return;
     j.type = j.type === 'G' ? 'R' : 'G'; j.rail = null; changed(); toast(t(j.type === 'G' ? 'madeFixed' : 'madeFree'), true); return;
@@ -847,7 +934,7 @@ function chartItem() {
   const it = primary(); if (!it) return null;
   if (it.kind === 'joint') return { ...it, label: jointById(mech, it.id).name };
   if (it.kind === 'link') return { ...it, label: lname(linkById(mech, it.id)) };
-  return { ...it, label: t('cam') };
+  return it.kind === 'cam' ? { ...it, label: t('cam') } : null;
 }
 function syncChartOptions() {
   const it = chartItem(), sel = $('#chartOut'), prev = sel.value;
@@ -943,7 +1030,7 @@ $('#btnApply').onclick = () => {
   for (const j of mech.joints) if (j.type === 'P') { const f = railOf(j); j.angle = +(Math.atan2(f.dy, f.dx) / D2R).toFixed(6); }
   changed(); setMode('edit');
 };
-$('#btnLinkDone').onclick = finishLink; $('#btnLinkCancel').onclick = cancelLink;
+$('#btnLinkDone').onclick = () => (st.tool === 'wall' ? finishWall() : finishLink()); $('#btnLinkCancel').onclick = cancelLink;
 $('#btnChart').onclick = autoChart; $('#btnCsv').onclick = exportCsv;
 $('#chartOut').onchange = renderChart;
 $('#lang').value = lang;

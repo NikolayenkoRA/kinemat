@@ -1,5 +1,8 @@
 import { camFollowerHome } from './cam.js';
-export function emptyMech() { return { version: 2, joints: [], links: [], driver: null, gears: [], cams: [], nextId: 1 }; }
+export function emptyMech() { return { version: 2, joints: [], links: [], driver: null, gears: [], cams: [], walls: [], nextId: 1 }; }
+export const wallById = (m, id) => (m.walls || []).find(w => w.id === id);
+// Стена / пол: ломаная из ≥ 2 точек; side = 1 — штриховка справа от направления обхода, −1 — слева
+export function addWall(m, pts, side = 1) { const w = { id: newId(m, 'w'), pts: pts.map(p => [+p[0], +p[1]]), side }; (m.walls ||= []).push(w); return w; }
 export const jointById = (m, id) => m.joints.find(j => j.id === id);
 export const linkById = (m, id) => m.links.find(l => l.id === id);
 export const linksOfJoint = (m, id) => m.links.filter(l => l.joints.includes(id));
@@ -54,6 +57,8 @@ export function deleteItems(m, items) {
   const js = new Set(items.filter(i => i.kind === 'joint').map(i => i.id));
   const ls = new Set(items.filter(i => i.kind === 'link').map(i => i.id));
   const cs = new Set(items.filter(i => i.kind === 'cam').map(i => i.id));
+  const ws = new Set(items.filter(i => i.kind === 'wall').map(i => i.id));
+  m.walls = (m.walls || []).filter(w => !ws.has(w.id));
   m.joints = m.joints.filter(j => !js.has(j.id));
   m.links = m.links.filter(l => !ls.has(l.id));
   m.links.forEach(l => { l.joints = l.joints.filter(x => !js.has(x)); });
@@ -164,7 +169,9 @@ export function validate(obj) {
   m.gears = (obj.gears || []).map(g => ({ id: String(g.id), a: String(g.a), b: String(g.b) }));
   m.cams = (obj.cams || []).map(c => ({ id: String(c.id), cam: String(c.cam), center: String(c.center), kind: c.kind === 'rocker' ? 'rocker' : 'trans', follower: String(c.follower), pivot: c.pivot ? String(c.pivot) : null,
     law: ['uniform', 'parabolic', 'harmonic', 'cycloidal'].includes(c.law) ? c.law : 'cycloidal', h: +c.h || 10, beta: (c.beta || [120, 60, 120, 60]).map(Number), rb: +c.rb || 30, rr: +c.rr || 0, e: +c.e || 0, arm: +c.arm || 55, pivotDist: +c.pivotDist || 70, phase: +c.phase || 0 }));
-  const nums = [...m.joints, ...m.links, ...m.gears, ...m.cams].map(o => parseInt(o.id.slice(1)) || 0);
+  m.walls = (obj.walls || []).filter(w => Array.isArray(w.pts) && w.pts.length >= 2)
+    .map(w => ({ id: String(w.id), pts: w.pts.map(p => [+p[0] || 0, +p[1] || 0]), side: w.side < 0 ? -1 : 1 }));
+  const nums = [...m.joints, ...m.links, ...m.gears, ...m.cams, ...m.walls].map(o => parseInt(o.id.slice(1)) || 0);
   m.nextId = Math.max(obj.nextId || 1, ...nums, 0) + 1;
   cleanup(m);
   return m;

@@ -8,6 +8,7 @@ import { camLaw, rockerSign } from './cam.js';
 // Позиционная задача: Ньютон с минимальной нормой шага (Jᵀ(JJᵀ+εI)⁻¹r) и тёплым стартом,
 // свободное перемещение: взвешенные МНК (связи ≫ цель) + проекция на многообразие связей.
 
+import { buildWallGeom, wallHit } from './walls.js';
 export function compile(mech) {
   const J = mech.joints, N = J.length;
   const idx = new Map(J.map((j, i) => [j.id, i]));
@@ -121,6 +122,7 @@ export function compile(mech) {
     if (free(t)) sys.driver = { kind: 'rot', pivot: p, tip: t, speed: d.speed ?? 60, dir: d.dir ?? 1, hmax: 2 * Math.PI / 180 };
   }
   sys.theta0 = sys.driver ? driverAngle(sys, X) : 0;
+  sys.walls = buildWallGeom(mech, idx, sys.scale);
   return sys;
 }
 const uniq = a => [...new Set(a)];
@@ -291,12 +293,13 @@ export function advance(sys, X, theta, dth) {
   let cur = X, th = theta, rem = dth;
   const sg = Math.sign(dth) || 1;
   const hmax = sys.driver.hmax;
-  let h = Math.min(Math.abs(dth), hmax);
+  let h = Math.min(Math.abs(dth), hmax), wall = null;
   while (Math.abs(rem) > 1e-12 * hmax) {
     const step = sg * Math.min(h, Math.abs(rem));
-    const Xn = tryStep(sys, cur, th, step);
-    if (Xn) { cur = Xn; th += step; rem -= step; commitAngles(sys, cur); h = Math.min(h * 2, hmax); }
-    else { h /= 2; if (h < 1e-3 * hmax) return { ok: false, X: cur, theta: th }; }
+    let Xn = tryStep(sys, cur, th, step), hit = null;
+    if (Xn && sys.walls && (hit = wallHit(sys.walls, cur, Xn))) { wall = hit; Xn = null; }
+    if (Xn) { cur = Xn; th += step; rem -= step; commitAngles(sys, cur); h = Math.min(h * 2, wall ? h : hmax); }
+    else { h /= 2; if (h < 1e-3 * hmax) return { ok: false, X: cur, theta: th, wall }; }
   }
   return { ok: true, X: cur, theta: th };
 }
@@ -350,9 +353,15 @@ export function dragTo(sys, X0, g, tx, ty, iters = 12, maxStep = 0.1 * sys.scale
     const dx = solveSPD(M, nv, gvec);
     const mx = maxAbs(dx); if (mx < 1e-10 * sys.scale) break;
     const lim = Math.min(0.1 * sys.scale, maxStep);
-    const Xt = X.slice();
-    applyDx(sys, Xt, dx, mx > lim ? -lim / mx : -1);
-    const res = solveHard(sys, Xt, 0, false, 25);
+    let Xt, res, fr = 1;
+    // упор в стену: укорачиваем шаг (подходим к контакту), иначе останавливаемся
+    for (let k = 0; k < 6; k++, fr /= 2) {
+      Xt = X.slice(); applyDx(sys, Xt, dx, (mx > lim ? -lim / mx : -1) * fr);
+      res = solveHard(sys, Xt, 0, false, 25);
+      const hit = res.ok && sys.walls ? wallHit(sys.walls, X, Xt) : null;
+      if (!hit) break;
+      sys.lastWall = hit; res = { ok: false };
+    }
     let jump = 0; for (let q = 0; q < Xt.length; q++) jump = Math.max(jump, Math.abs(Xt[q] - X[q]));
     // защита от перескока на другую ветвь сборки: шарнир не может уйти намного дальше шага
     if (!res.ok || jump > Math.min(0.4 * sys.scale, 4 * lim + 0.01 * sys.scale)) break;
@@ -374,8 +383,16 @@ export function dragPath(sys, X0, g, tx, ty, onStep = null, step = 0.02 * sys.sc
   const dist = Y => { const [px, py] = pointOf(Y, g); return Math.hypot(px - tx, py - ty); };
   const t0 = Date.now(), late = () => Date.now() - t0 > tmax; // не подвешиваем интерфейс: остаток догонит следующее событие
   for (let k = 1; k <= n && !late(); k++) {
-    const t = k / n;
-    X = dragTo(sys, X, g, fx + (tx - fx) * t, fy + (ty - fy) * t, 12, step / 2, 1.5 * step);
+    const t = k / n, sx = fx + (tx - fx) * t, sy = fy + (ty - fy) * t;
+    sys.lastWall = null;
+    X = dragTo(sys, X, g, sx, sy, 12, step / 2, 1.5 * step);
+    const w = sys.lastWall;
+    if (w) { // упор: скользим вдоль стены — оставляем только касательную составляющую
+      const [px, py] = pointOf(X, g), dx = w.seg[2] - w.seg[0], dy = w.seg[3] - w.seg[1], L = Math.hypot(dx, dy) || 1;
+      const u = ((sx - px) * dx + (sy - py) * dy) / L;
+      sys.lastWall = null; X = dragTo(sys, X, g, px + u * dx / L, py + u * dy / L, 12, step / 2, 1.5 * step);
+      sys.contact = w;
+    }
     if (onStep) onStep(X);
   }
   // точка отстала (упор, особое положение) — догоняем теми же малыми шагами, пока есть прогресс
@@ -394,12 +411,12 @@ export function sweep(sys, X0, theta0, stepDeg = 1, totalDeg = 360, hLin = null)
   const lin = sys.driver?.kind === 'lin';
   const h = lin ? dir * (hLin ?? 0.5) : dir * stepDeg * Math.PI / 180, n = lin ? Math.round(totalDeg) : Math.round(totalDeg / stepDeg);
   frames.push({ theta: th, X: X.slice(), A: saveAngles(sys) });
-  let ok = true;
+  let ok = true, wall = null;
   for (let k = 0; k < n; k++) {
     const s = advance(sys, X, th, h);
-    if (!s.ok) { ok = false; break; }
+    if (!s.ok) { ok = false; wall = s.wall || null; if (s.X) { X = s.X; th = s.theta; if (wall) frames.push({ theta: th, X: X.slice(), A: saveAngles(sys) }); } break; }
     X = s.X; th = s.theta; frames.push({ theta: th, X: X.slice(), A: saveAngles(sys) });
   }
   for (const f of frames) f.V = tangent(sys, f.X, f.theta);
-  return { ok, frames };
+  return { ok, frames, wall };
 }

@@ -1,4 +1,4 @@
-import { emptyMech, setDriver, setLinearDriver, addCam, rebuildCam } from './model.js';
+import { emptyMech, setDriver, setLinearDriver, addCam, rebuildCam, addWall } from './model.js';
 
 const rad = d => d * Math.PI / 180;
 // Пересечение окружностей (P,rp) и (Q,rq); pick выбирает одну из двух точек
@@ -142,6 +142,13 @@ Object.assign(PRESETS, {
     setDriver(m, crank, o1); m.driver.speed = 90;
     return m;
   },
+  // Четырёхзвенник на полу: стойки стоят на полу, кривошип упирается в пол и качается туда-обратно
+  floorstop() {
+    const m = PRESETS.fourbar();
+    addWall(m, [[-60, 0], [150, 0]], 1);
+    m.driver.lock = 'reverse';
+    return m;
+  },
   camTrans() {
     const m = emptyMech(); const c = addCam(m, 0, 0);
     Object.assign(c, { law: 'cycloidal', h: 18, beta: [120, 45, 120, 75], rb: 30, rr: 7, e: 8 }); rebuildCam(m, c);
@@ -155,4 +162,4 @@ Object.assign(PRESETS, {
     m.driver.speed = 90; return m;
   },
 });
-export const PRESET_KEYS = ['fourbar', 'crankslider', 'watt', 'stephenson', 'jansen', 'kulisa', 'sliderdriven', 'gears', 'planetary', 'rack', 'camTrans', 'camRocker', 'bellcrank'];
+export const PRESET_KEYS = ['fourbar', 'crankslider', 'watt', 'stephenson', 'jansen', 'kulisa', 'sliderdriven', 'gears', 'planetary', 'rack', 'camTrans', 'camRocker', 'bellcrank', 'floorstop'];

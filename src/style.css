@@ -115,3 +115,7 @@ button.danger:hover { background:#fecaca; }
   .th-body section, .th-art { break-inside:avoid-page; }
   details.th-art > .th-art-body { display:block; }
 }
+
+.wallpts { display:grid; grid-template-columns:18px 1fr 1fr 26px; gap:4px 6px; align-items:center; margin-bottom:6px; }
+.wallpts input { width:100%; min-width:0; }
+.wallpts button { padding:2px 4px; }

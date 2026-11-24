@@ -36,6 +36,7 @@ export const TT = {
     grChange: 'Равенство s + l = p + q: механизм проходит особое положение (звенья вытягиваются в линию), возможен переход на другую ветвь сборки.',
     muLine: 'Угол передачи (между шатуном и коромыслом) за цикл: от {a}° до {b}°. {verdict}', muOk: 'Не меньше 40° — передача движения благоприятная.', muBad: 'Меньше 40° — возможна плохая передача сил, рекомендуется μ_min ≥ 40°.',
     csTitle: 'Кривошипно-ползунный механизм', csLine: 'Кривошип r = {r}, шатун l = {l}, дезаксиал e = {e} мм. Условие существования кривошипа $r + e \\le l$: {v}.', csYes: 'выполняется — кривошип проворачивается', csNo: 'не выполняется — кривошипа нет',
+    wallNote: 'Стены / пол ({n}) — односторонние ограничения (упоры): это не звенья и не кинематические пары, в формулу Чебышёва не входят; они лишь ограничивают диапазон движения (при контакте двигатель останавливается или реверсирует).',
     printTitle: 'Структурный анализ механизма', printed: 'Kinemat · {d}',
   },
   en: {
@@ -74,6 +75,7 @@ export const TT = {
     grChange: 'Equality s + l = p + q: change-point mechanism — links become collinear, branch switching is possible.',
     muLine: 'Transmission angle (coupler–rocker) over the cycle: {a}° to {b}°. {verdict}', muOk: 'At least 40° — good force transmission.', muBad: 'Below 40° — poor force transmission, μ_min ≥ 40° is recommended.',
     csTitle: 'Slider-crank mechanism', csLine: 'Crank r = {r}, connecting rod l = {l}, offset e = {e} mm. Crank existence condition $r + e \\le l$: {v}.', csYes: 'holds — the crank rotates fully', csNo: 'fails — no crank',
+    wallNote: 'Walls / floor ({n}) are unilateral constraints (stops): not links and not kinematic pairs, so they are not in the Chebyshev formula; they only limit the range of motion (on contact the motor stops or reverses).',
     printTitle: 'Structural analysis of the mechanism', printed: 'Kinemat · {d}',
   },
 };
