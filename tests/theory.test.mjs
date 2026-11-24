@@ -1,7 +1,8 @@
 // Тесты структурного анализа: node tests/theory.test.mjs
 import { analyze, grashof, assurDecompose } from '../src/theory.js';
 import { PRESETS, PRESET_KEYS } from '../src/presets.js';
-import { dof, emptyMech, addJoint, addLink, setDriver } from '../src/model.js';
+import { dof, emptyMech, addJoint, addLink, setDriver, mergeLinks, chainBars, validate } from '../src/model.js';
+import { compile, sweep, dragTo } from '../src/solver.js';
 let fails = 0, n = 0;
 const check = (name, cond, info = '') => { n++; if (!cond) fails++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name} ${info}`); };
 const types = a => a.links.map(l => l.type).join(',');
@@ -81,6 +82,43 @@ for (const k of PRESET_KEYS) {
   const pairs = [P(0, 1), P(1, 3), P(3, 2), P(0, 4), P(4, 2), P(0, 5), P(5, 2)];
   const d = assurDecompose(6, pairs, [1]);
   check('Assur: triad recognised as one class III group of order 3', d.ok && d.groups.length === 1 && d.groups[0].cls === 3 && d.groups[0].order === 3);
+}
+// v4: Г-образное звено
+{
+  const m = PRESETS.bellcrank(), a = analyze(m), bell = a.links.find(l => l.name === 'BO₂C');
+  check('bell crank: L-shaped link BO₂C is ONE link (rocker) with 3 joints', bell && bell.type === 'rocker' && bell.joints.length === 3 && a.n === 5 && a.p5 === 7 && a.W === 1 && a.Wreal === 1, a.formula);
+  check('bell crank: two II-class dyads', a.assur.ok && a.assur.groups.length === 2 && a.assur.cls === 2);
+  const s = compile(m), r = sweep(s, s.X0, s.theta0, 2, 360), id = nm => s.idx.get(m.joints.find(j => j.name === nm).id);
+  const [b, o, c] = ['B', 'O₂', 'C'].map(id), d = (X, i, j) => Math.hypot(X[2 * i] - X[2 * j], X[2 * i + 1] - X[2 * j + 1]);
+  const ang = X => Math.atan2((X[2 * b] - X[2 * o]) * (X[2 * c + 1] - X[2 * o + 1]) - (X[2 * b + 1] - X[2 * o + 1]) * (X[2 * c] - X[2 * o]), (X[2 * b] - X[2 * o]) * (X[2 * c] - X[2 * o]) + (X[2 * b + 1] - X[2 * o + 1]) * (X[2 * c + 1] - X[2 * o + 1]));
+  const a0 = ang(s.X0), l1 = d(s.X0, b, o), l2 = d(s.X0, o, c); let err = 0;
+  for (const f of r.frames) err = Math.max(err, Math.abs(d(f.X, b, o) - l1), Math.abs(d(f.X, o, c) - l2), Math.abs(ang(f.X) - a0));
+  check('bell crank: full revolution, arms and 90° bend stay rigid', r.ok && err < 1e-8 && Math.abs(Math.abs(a0) - Math.PI / 2) < 1e-6, `err=${err.toExponential(2)}`);
+  let X = s.X0.slice(), worst = 0;
+  for (let k = 1; k <= 20; k++) { X = dragTo(s, X, { kind: 'j', i: c }, s.X0[2 * c] - k, s.X0[2 * c + 1] + 0.5 * k); worst = Math.max(worst, Math.abs(d(X, b, o) - l1), Math.abs(d(X, o, c) - l2), Math.abs(ang(X) - a0)); }
+  check('bell crank: free move of C keeps the L-shape rigid', worst < 1e-8 && Math.hypot(X[2 * c] - s.X0[2 * c], X[2 * c + 1] - s.X0[2 * c + 1]) > 1, `err=${worst.toExponential(2)}`);
+  const back = validate(JSON.parse(JSON.stringify(m)));
+  check('bell crank: JSON round trip keeps bars', JSON.stringify(back.links.find(l => l.bars)?.bars) === JSON.stringify(m.links.find(l => l.bars).bars));
+}
+{
+  // объединение двух звеньев с общим шарниром → одно жёсткое Г-образное звено
+  const m = emptyMech(); const o1 = addJoint(m, 0, 0, 'G'), a = addJoint(m, 0, 20), b = addJoint(m, 60, 20), c = addJoint(m, 60, -20), o2 = addJoint(m, 60, -60, 'G');
+  const cr = addLink(m, [o1.id, a.id]), ab = addLink(m, [a.id, b.id]), bc = addLink(m, [b.id, c.id]); addLink(m, [c.id, o2.id]); setDriver(m, cr.id, o1.id);
+  const before = analyze(m);
+  const r = mergeLinks(m, [ab.id, bc.id]);
+  const after = analyze(m);
+  check('merge: two links sharing a joint → one link with 3 joints and 2 bars', typeof r === 'object' && r.joints.length === 3 && r.bars.length === 2 && m.links.length === 3);
+  check('merge: Chebyshev n −1, p5 −1 (one fewer link and pair), counted as one link', after.n === before.n - 1 && after.p5 === before.p5 - 1 && after.W === before.W - 1 && after.links.filter(l => l.no > 0).length === 3, `W ${before.W} → ${after.W}`);
+  check('merge: four-bar with L-shaped coupler is W=1, decomposes', after.W === 1 && after.assur.ok && after.links.some(l => l.joints.length === 3 && l.type === 'coupler'), after.formula);
+  const s = compile(m), sw = sweep(s, s.X0, s.theta0, 2, 360);
+  const ia = s.idx.get(a.id), ic = s.idx.get(c.id), L0 = Math.hypot(s.X0[2 * ia] - s.X0[2 * ic], s.X0[2 * ia + 1] - s.X0[2 * ic + 1]);
+  const e2 = Math.max(...sw.frames.map(f => Math.abs(Math.hypot(f.X[2 * ia] - f.X[2 * ic], f.X[2 * ia + 1] - f.X[2 * ic + 1]) - L0)));
+  check('merge: L-shaped coupler mechanism makes a full turn, A–C distance kept (rigid)', sw.ok && sw.frames.length === 181 && e2 < 1e-8, `err=${e2.toExponential(2)}`);
+  const m2 = PRESETS.gears(); check('merge: gears refused', mergeLinks(m2, m2.links.map(l => l.id)) === 'special');
+  const m3 = emptyMech(); const p = addJoint(m3, 0, 0), q = addJoint(m3, 10, 0), u = addJoint(m3, 50, 0), v = addJoint(m3, 60, 0);
+  const l1 = addLink(m3, [p.id, q.id]), l2 = addLink(m3, [u.id, v.id]);
+  check('merge: unconnected links refused', mergeLinks(m3, [l1.id, l2.id]) === 'notConnected' && m3.links.length === 2);
+  check('chainBars builds a polyline', JSON.stringify(chainBars(['a', 'b', 'c'])) === JSON.stringify([['a', 'b'], ['b', 'c']]));
 }
 console.log(`\n${n - fails}/${n} passed`);
 process.exit(fails ? 1 : 0);

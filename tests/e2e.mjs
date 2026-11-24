@@ -161,7 +161,7 @@ try {
   await page.click('#btnUndo'); await page.keyboard.press('Escape');
 
   // --- v2: новые примеры ---
-  const newPresets = [['kulisa', '6-kulisa'], ['sliderdriven', '7-slider-driven'], ['gears', '8-gears'], ['planetary', '9-planetary'], ['rack', '10-rack-pinion'], ['camTrans', '11-cam-translating'], ['camRocker', '12-cam-rocker']];
+  const newPresets = [['bellcrank', '24-bellcrank-sim'], ['kulisa', '6-kulisa'], ['sliderdriven', '7-slider-driven'], ['gears', '8-gears'], ['planetary', '9-planetary'], ['rack', '10-rack-pinion'], ['camTrans', '11-cam-translating'], ['camRocker', '12-cam-rocker']];
   for (const [k, shot] of newPresets) {
     await page.click('[data-mode=edit]');
     await page.selectOption('#preset', k);
@@ -197,6 +197,87 @@ try {
   }
   await page.click('[data-mode=edit]');
 
+  // --- v4: неподвижный шарнир, Г-образное звено, объединение, Esc → «Выбор» ---
+  page.on('dialog', d => d.accept());
+  await page.click('#btnNew'); await page.waitForTimeout(200);
+  canvasBox = await page.locator('#cv').boundingBox();
+  const at = (x, y) => page.mouse.click(canvasBox.x + x, canvasBox.y + y);
+  const app = (f, arg) => page.evaluate(f, arg);
+  // Esc отменяет начатое звено и включает «Выбор»
+  await page.click('[data-tool=link]'); await at(300, 200); await page.waitForTimeout(50);
+  await page.keyboard.press('Escape'); await page.waitForTimeout(50);
+  const esc1 = await app(() => ({ tool: window.__app.st.tool, draft: window.__app.st.draft.length, links: window.__app.mech.links.length }));
+  check('Esc cancels the link in progress and switches to «Выбор»', esc1.tool === 'select' && esc1.draft === 0 && esc1.links === 0 && await page.$eval('[data-tool=select]', b => b.classList.contains('on')), JSON.stringify(esc1));
+  await page.click('[data-tool=cam]'); await page.keyboard.press('Escape');
+  check('Esc from any tool returns to «Выбор»', (await app(() => window.__app.st.tool)) === 'select');
+  // инструмент «Неподвижный шарнир — стойка»
+  check('fixed-pivot tool has a clear tooltip', (await page.getAttribute('[data-tool=ground]', 'title')).includes('Неподвижный шарнир'));
+  await page.click('[data-tool=ground]'); await at(320, 300); await page.waitForTimeout(60);
+  const g1 = await app(() => window.__app.mech.joints.map(j => j.type));
+  await page.click('[data-tool=joint]'); await at(520, 300); await page.waitForTimeout(60);
+  await page.click('[data-tool=ground]'); await at(520, 300); await page.waitForTimeout(60);
+  const g2 = await app(() => window.__app.mech.joints.map(j => j.type));
+  check('fixed-pivot tool: places a new ground pivot and fixes an existing joint', g1.join() === 'G' && g2.join() === 'G,G', g2.join());
+  await page.screenshot({ path: path.join(shots, '25-fixed-pivot-tool.png') });
+  await at(520, 300); await page.waitForTimeout(60);
+  check('fixed-pivot tool: clicking a ground pivot again makes it movable', (await app(() => window.__app.mech.joints.map(j => j.type).join())) === 'G,R');
+  const btn = page.locator('#props button[data-act=toggleFix]');
+  check('joint properties: button «Сделать неподвижным»', (await btn.textContent()).includes('Сделать неподвижным'));
+  await btn.click(); await page.waitForTimeout(60);
+  check('button toggles the joint to fixed, label becomes «Сделать подвижным»', (await app(() => window.__app.mech.joints[1].type)) === 'G' && (await page.locator('#props button[data-act=toggleFix]').textContent()).includes('Сделать подвижным'));
+  await page.keyboard.press('Control+z'); await page.waitForTimeout(60);
+  check('undo restores the movable joint', (await app(() => window.__app.mech.joints[1].type)) === 'R');
+  // Г-образное звено инструментом: стойка → угол → конец
+  await page.click('[data-tool=bent]');
+  check('bent-link tool has a clear tooltip', (await page.getAttribute('[data-tool=bent]', 'title')).includes('Г-образное'));
+  await at(320, 300); await at(320, 160); await at(470, 160); await page.keyboard.press('Enter'); await page.waitForTimeout(80);
+  const bl = await app(() => { const m = window.__app.mech; return { links: m.links.length, joints: m.links[0]?.joints.length, bars: m.links[0]?.bars?.length, W: window.__app.theory ? null : null }; });
+  check('bent-link tool: one link with 3 joints drawn as a polyline (2 bars)', bl.links === 1 && bl.joints === 3 && bl.bars === 2, JSON.stringify(bl));
+  check('Enter finishes, tool stays for the next link', (await app(() => window.__app.st.tool)) === 'bent');
+  await page.keyboard.press('Escape');
+  const badge = await page.textContent('#dofBadge');
+  check('L-shaped link on a ground pivot: W = 1, 1 link', badge.includes('W = 1') && badge.includes('1 зв'), badge);
+  await page.screenshot({ path: path.join(shots, '26-L-shaped-link-tool.png') });
+  // свободное перемещение Г-образного звена: форма сохраняется
+  await page.click('[data-mode=drag]'); await page.waitForTimeout(60);
+  {
+    const ids = await app(() => window.__app.mech.links[0].joints);
+    const [ex, ey] = await scr(ids[2]);
+    await page.mouse.move(canvasBox.x + ex, canvasBox.y + ey); await page.mouse.down();
+    await page.mouse.move(canvasBox.x + ex - 60, canvasBox.y + ey + 120, { steps: 4 }); await page.mouse.up();
+    const r = await app(ids => { const a = window.__app, P = id => a.P(id), m = a.mech, J = id => m.joints.find(j => j.id === id);
+      const d = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]), d0 = (p, q) => Math.hypot(J(p).x - J(q).x, J(p).y - J(q).y);
+      return { moved: d(P(ids[2]), [J(ids[2]).x, J(ids[2]).y]), err: Math.max(...[[0, 1], [1, 2], [0, 2]].map(([i, k]) => Math.abs(d(P(ids[i]), P(ids[k])) - d0(ids[i], ids[k])))) }; }, ids);
+    check('free move: L-shaped link rotates about the pivot as one rigid body', r.moved > 5 && r.err < 1e-6, `moved ${r.moved.toFixed(1)} mm, err ${r.err.toExponential(1)}`);
+    await page.screenshot({ path: path.join(shots, '27-L-shaped-free-move.png') });
+  }
+  await page.click('[data-mode=edit]');
+  // «Объединить в одно звено»: шатун + коромысло четырёхзвенника
+  await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200);
+  {
+    const [ab, ob] = await app(() => { const m = window.__app.mech, J = n => m.joints.find(j => j.name === n).id; return [m.links.find(l => l.joints.includes(J('A')) && l.joints.includes(J('B'))).id, m.links.find(l => l.joints.includes(J('O₂'))).id]; });
+    await app(([a, b]) => { window.__app.select('link', a); }, [ab, ob]);
+    await page.evaluate(b => { const a = window.__app; a.st.selSet.set('link:' + b, { kind: 'link', id: b }); }, ob);
+    await page.click('[data-tool=select]'); // перерисовать панель
+    await page.evaluate(() => window.__app.select && null);
+    await page.keyboard.down('Shift'); const [mx, my] = await app(id => { const a = window.__app, l = a.mech.links.find(q => q.id === id), [p, q] = l.joints.map(j => a.toS(...a.P(j))); return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]; }, ob);
+    await page.keyboard.up('Shift');
+    await app(([a, b]) => { const x = window.__app; x.select('link', a); }, [ab, ob]);
+    await page.keyboard.down('Shift'); await page.mouse.click(canvasBox.x + mx, canvasBox.y + my); await page.keyboard.up('Shift'); await page.waitForTimeout(80);
+    const mbtn = page.locator('#props button[data-act=merge]');
+    check('multi-select of two links shows «Объединить в одно звено»', (await mbtn.count()) === 1 && (await mbtn.textContent()).includes('Объединить в одно звено'));
+    await mbtn.click(); await page.waitForTimeout(120);
+    const mg = await app(() => { const m = window.__app.mech; return { links: m.links.length, big: m.links.find(l => l.bars)?.joints.length, W: document.querySelector('#mechInfo').textContent.match(/W = (-?\d+)/)?.[1] }; });
+    check('merge: coupler + rocker became one rigid link (3 links → 2, W = 0 → structure)', mg.links === 2 && mg.big === 4 && mg.W === '0', JSON.stringify(mg));
+    await page.screenshot({ path: path.join(shots, '28-merged-link.png') });
+    await page.keyboard.press('Control+z'); await page.waitForTimeout(80);
+    check('undo splits the merged link back', (await app(() => window.__app.mech.links.length)) === 3);
+  }
+  // Пример «Г-образный рычаг» + Теория: одно звено BO₂C
+  await page.selectOption('#preset', 'bellcrank'); await page.waitForTimeout(250);
+  await page.screenshot({ path: path.join(shots, '29-bellcrank-editor.png') });
+  await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200);
+
   // --- Теория ---
   await page.click('#btnTheory'); await page.waitForTimeout(400);
   check('Theory panel opens (RU)', await page.isVisible('#theory') && (await page.textContent('#theory')).includes('Степень подвижности'));
@@ -221,6 +302,7 @@ try {
     ['kulisa', '20-theory-kulisa', a => a.assur.groups[0].vid === 3 && a.links.some(l => l.type === 'stone')],
     ['planetary', '21-theory-planetary', a => a.p4 === 2 && a.assur.substitute && a.assur.ok],
     ['camTrans', '22-theory-cam', a => a.p4 === 1 && a.links.some(l => l.type === 'cam') && a.links.some(l => l.type === 'follower')],
+    ['bellcrank', '30-theory-bellcrank', a => a.n === 5 && a.links.some(l => l.name === 'BO₂C' && l.type === 'rocker') && a.assur.groups.length === 2],
   ]) {
     await page.selectOption('#preset', k); await page.waitForTimeout(450);
     const a = await page.evaluate(() => window.__app.theory());

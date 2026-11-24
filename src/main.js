@@ -1,6 +1,6 @@
 import { t, lang, setLang, applyStatic } from './i18n.js';
 import { initTheory, refreshTheory, toggleTheory, theoryAnalysis, setTheoryTab } from './theory-ui.js';
-import { emptyMech, addJoint, addLink, deleteItems, setDriver, setLinearDriver, fixDriver, dof, jointById, linkById, linksOfJoint, camById, addCam, rebuildCam, cleanup, newId, validate } from './model.js';
+import { emptyMech, addJoint, addLink, deleteItems, setDriver, setLinearDriver, fixDriver, dof, jointById, linkById, linksOfJoint, camById, addCam, rebuildCam, cleanup, newId, validate, mergeLinks, chainBars } from './model.js';
 import { compile, advance, tangent, dragTo, dragPath, pointOf, localGrab, driverAngle, sweep, angCont, railFrame, saveAngles, loadAngles } from './solver.js';
 import { camProfile, camLaw, LAWS, camBetas } from './cam.js';
 import { PRESETS, PRESET_KEYS } from './presets.js';
@@ -39,7 +39,7 @@ function pushUndo() { st.undo.push(JSON.stringify(mech)); if (st.undo.length > 2
 function changed(geom = true) { if (geom) { st.geom++; chart = null; } cleanup(mech); saveLocal(); renderPanels(); if (geom) autoChart(); refreshTheory(); }
 function undo() { if (!st.undo.length || st.mode !== 'edit') return; st.redo.push(JSON.stringify(mech)); mech = validate(JSON.parse(st.undo.pop())); selectOnly(null); changed(); }
 function redo() { if (!st.redo.length || st.mode !== 'edit') return; st.undo.push(JSON.stringify(mech)); mech = validate(JSON.parse(st.redo.pop())); selectOnly(null); changed(); }
-function setMech(m) { pushUndo(); mech = m; selectOnly(null); st.draft = []; changed(); fitView(); }
+function setMech(m) { pushUndo(); mech = m; selectOnly(null); st.draft = []; st.draftNew = []; $('#chartMsg').textContent = ''; changed(); fitView(); }
 
 // ---------- система и позиции ----------
 function ensureSys() {
@@ -186,6 +186,7 @@ function hitJoint(sx, sy, filter = () => true) {
 function hitLink(sx, sy) {
   let best = null, bd = 10;
   for (const l of mech.links) {
+    if (l.bars) { for (const [a, b] of l.bars) { const d = segDist([sx, sy], toS(...P(a)), toS(...P(b))); if (d < bd) { bd = d; best = l; } } continue; }
     const pts = hull(l.joints.map(id => toS(...P(id))));
     if (pts.length >= 3 && inPoly([sx, sy], pts)) return l;
     for (let i = 0; i < pts.length; i++) { const d = segDist([sx, sy], pts[i], pts[(i + 1) % pts.length]); if (d < bd) { bd = d; best = l; } }
@@ -267,12 +268,18 @@ function draw() {
     const col = COLORS[k % COLORS.length], body = l.gear || l.rack || (mech.cams || []).some(c => c.cam === l.id);
     const pts = l.joints.map(id => toS(...P(id)));
     const sel = isSel('link', l.id), hov = st.hover?.kind === 'link' && st.hover.id === l.id;
-    const hp = hull(pts);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (l.bars) { // ломаное (Г-образное) звено: стержни с изгибом в шарнирах
+      ctx.beginPath(); for (const [a, b] of l.bars) { ctx.moveTo(...toS(...P(a))); ctx.lineTo(...toS(...P(b))); }
+      ctx.strokeStyle = col + (sel ? 'ff' : '55'); ctx.lineWidth = sel ? 18 : 16; ctx.stroke();
+      ctx.strokeStyle = col; ctx.lineWidth = sel || hov ? 4 : 3; ctx.stroke();
+    } else {
+    const hp = hull(pts);
     ctx.beginPath(); hp.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (hp.length > 2) ctx.closePath();
     ctx.strokeStyle = col + (sel ? 'ff' : '55'); ctx.lineWidth = body ? (sel ? 9 : 7) : sel ? 18 : 16; ctx.stroke();
     if (hp.length > 2) { ctx.fillStyle = col + '40'; ctx.fill(); }
     ctx.strokeStyle = col; ctx.lineWidth = sel || hov ? 4 : body ? 2 : 3; ctx.stroke();
+    }
     if (mech.driver?.kind !== 'lin' && mech.driver?.link === l.id) drawDriverArrow();
   });
   // ползуны (камни)
@@ -294,7 +301,7 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(x - 18, y + 20); ctx.lineTo(x + 18, y + 20); ctx.stroke();
     for (let k = -16; k <= 12; k += 6) { ctx.beginPath(); ctx.moveTo(x + k, y + 27); ctx.lineTo(x + k + 6, y + 21); ctx.stroke(); }
   }
-  if (editing && st.tool === 'link' && st.draft.length) {
+  if (editing && (st.tool === 'link' || st.tool === 'bent') && st.draft.length) {
     ctx.strokeStyle = '#2563eb'; ctx.setLineDash([6, 5]); ctx.lineWidth = 2; ctx.beginPath();
     st.draft.forEach((id, k) => { const p = toS(...P(id)); k ? ctx.lineTo(...p) : ctx.moveTo(...p); });
     if (st.cursor) ctx.lineTo(...toS(...st.cursor)); ctx.stroke(); ctx.setLineDash([]);
@@ -468,14 +475,17 @@ function editDown(sx, sy, wpt, e) {
     pushUndo(); const nj = addJoint(mech, gx, gy);
     if (l) { l.joints.push(nj.id); nj.trace = true; }
     selectOnly({ kind: 'joint', id: nj.id }); changed();
-  } else if (tool === 'link') {
+  } else if (tool === 'link' || tool === 'bent') {
     if (j && st.draft.at(-1) === j.id) { finishLink(); return; }
     if (j) { if (!st.draft.includes(j.id)) st.draft.push(j.id); }
-    else { pushUndo(); const nj = addJoint(mech, gx, gy); st.draft.push(nj.id); st.draftCreated = true; changed(); }
+    else { if (!st.draftCreated) pushUndo(); const nj = addJoint(mech, gx, gy); st.draft.push(nj.id); st.draftCreated = true; (st.draftNew ||= []).push(nj.id); changed(); }
     syncLinkBar();
   } else if (tool === 'ground' || tool === 'slider') {
-    pushUndo(); const type = tool === 'ground' ? 'G' : 'P';
-    const tj = j || addJoint(mech, gx, gy, type); tj.type = type; selectOnly({ kind: 'joint', id: tj.id }); changed();
+    pushUndo(); let type = tool === 'ground' ? 'G' : 'P';
+    if (j && tool === 'ground' && j.type === 'G') type = 'R'; // повторный щелчок по стойке — снова подвижный шарнир
+    const tj = j || addJoint(mech, gx, gy, type); tj.type = type; if (type !== 'P') tj.rail = null;
+    selectOnly({ kind: 'joint', id: tj.id }); changed();
+    if (tool === 'ground') toast(t(type === 'G' ? 'madeFixed' : 'madeFree'), true);
   } else if (tool === 'gear') {
     pushUndo();
     if (l && !l.gear && !l.rack) {
@@ -513,10 +523,16 @@ function meshWarning(g) {
   return '';
 }
 function finishLink() {
-  if (st.draft.length >= 2) { if (!st.draftCreated) pushUndo(); const l = addLink(mech, st.draft); selectOnly({ kind: 'link', id: l.id }); }
-  st.draft = []; st.draftCreated = false; changed(); syncLinkBar();
+  if (st.draft.length >= 2) { if (!st.draftCreated) pushUndo(); const l = addLink(mech, st.draft, st.tool === 'bent' && st.draft.length >= 3 ? chainBars(st.draft) : null); selectOnly({ kind: 'link', id: l.id }); }
+  st.draft = []; st.draftCreated = false; st.draftNew = []; changed(); syncLinkBar();
 }
-function cancelLink() { st.draft = []; st.draftCreated = false; st.meshFirst = null; syncLinkBar(); }
+function cancelLink() {
+  // шарниры, поставленные только что для недостроенного звена, убираем
+  const tmp = (st.draftNew || []).filter(id => !linksOfJoint(mech, id).length);
+  st.draft = []; st.draftCreated = false; st.draftNew = []; st.meshFirst = null;
+  if (tmp.length) { deleteItems(mech, tmp.map(id => ({ kind: 'joint', id }))); changed(); }
+  syncLinkBar();
+}
 function finishBox(a) {
   const r = { x0: Math.min(a.sx0, a.sx), x1: Math.max(a.sx0, a.sx), y0: Math.min(a.sy0, a.sy), y1: Math.max(a.sy0, a.sy) };
   if (!a.add) st.selSet.clear();
@@ -525,7 +541,8 @@ function finishBox(a) {
   for (const j of mech.joints) if (inRect(sp(j.id), r)) st.selSet.set('joint:' + j.id, { kind: 'joint', id: j.id });
   for (const l of mech.links) {
     const pts = l.joints.map(sp);
-    let hit = win ? pts.every(p => inRect(p, r)) : pts.some(p => inRect(p, r)) || hull(pts).some((p, i, h) => segRect(p, h[(i + 1) % h.length], r));
+    const segs = l.bars ? l.bars.map(([a, b]) => [sp(a), sp(b)]) : hull(pts).map((p, i, h) => [p, h[(i + 1) % h.length]]);
+    let hit = win ? pts.every(p => inRect(p, r)) : pts.some(p => inRect(p, r)) || segs.some(([p, q]) => segRect(p, q, r));
     if (l.gear) { const g = gearScreen(l); const gr = { x0: g.x - g.r, x1: g.x + g.r, y0: g.y - g.r, y1: g.y + g.r }; if (win) hit = hit && gr.x0 >= r.x0 && gr.x1 <= r.x1 && gr.y0 >= r.y0 && gr.y1 <= r.y1; }
     if (hit) st.selSet.set('link:' + l.id, { kind: 'link', id: l.id });
   }
@@ -546,7 +563,7 @@ function selectAll() {
   (mech.cams || []).forEach(c => st.selSet.set('cam:' + c.id, { kind: 'cam', id: c.id }));
   renderPanels();
 }
-cv.addEventListener('dblclick', () => { if (st.mode === 'edit' && st.tool === 'link' && st.draft.length >= 2) finishLink(); });
+cv.addEventListener('dblclick', () => { if (st.mode === 'edit' && (st.tool === 'link' || st.tool === 'bent') && st.draft.length >= 2) finishLink(); });
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = evPos(e);
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, [sx, sy]);
@@ -596,13 +613,21 @@ window.addEventListener('keydown', e => {
   if (ctrl && (k === 'z' || k === 'я')) { e.preventDefault(); e.shiftKey ? redo() : undo(); }
   else if (ctrl && (k === 'y' || k === 'н')) { e.preventDefault(); redo(); }
   else if (ctrl && (k === 'a' || k === 'ф')) { if (st.mode === 'edit') { e.preventDefault(); selectAll(); } }
-  else if (k === 'enter' && st.tool === 'link') finishLink();
-  else if (k === 'escape') { cancelLink(); selectOnly(null); renderPanels(); syncHint(); }
+  else if (k === 'enter' && (st.tool === 'link' || st.tool === 'bent')) finishLink();
+  else if (k === 'escape') escape();
   else if ((k === 'delete' || k === 'backspace') && st.mode === 'edit') { e.preventDefault(); deleteSelection(); }
   else if (k === ' ') { e.preventDefault(); if (st.mode === 'sim') togglePlay(); else st.space = true; }
-  else if (st.mode === 'edit' && !ctrl) { const map = { v: 'select', j: 'joint', l: 'link', g: 'ground', s: 'slider', z: 'gear', m: 'mesh', k: 'cam', d: 'delete' }; if (map[k]) setTool(map[k]); }
+  else if (st.mode === 'edit' && !ctrl) { const map = { v: 'select', j: 'joint', l: 'link', b: 'bent', g: 'ground', s: 'slider', z: 'gear', m: 'mesh', k: 'cam', d: 'delete' }; if (map[k]) setTool(map[k]); }
 });
 
+// Esc: прервать начатое построение и вернуться к инструменту «Выбор»; если он уже активен — снять выделение
+function escape() {
+  const busy = st.draft.length || st.meshFirst || action;
+  cancelLink(); if (action?.type === 'box') action = null;
+  if (st.mode === 'edit' && st.tool !== 'select') { setTool('select'); if (document.activeElement?.closest?.('#tools')) document.activeElement.blur(); }
+  else if (!busy) selectOnly(null);
+  renderPanels(); syncHint();
+}
 // ---------- режимы / инструменты ----------
 function setMode(m) {
   if (m === st.mode) return;
@@ -619,7 +644,7 @@ function syncHint() {
   if (st.mode === 'edit' && st.tool === 'mesh' && st.meshFirst) k = 'hintMesh2';
   $('#hint').textContent = t(k);
 }
-function syncLinkBar() { $('#linkBar').classList.toggle('show', st.mode === 'edit' && st.tool === 'link' && st.draft.length > 0); }
+function syncLinkBar() { $('#linkBar').classList.toggle('show', st.mode === 'edit' && (st.tool === 'link' || st.tool === 'bent') && st.draft.length > 0); }
 function syncSimUi() {
   $('#simCtl').classList.toggle('hidden', st.mode === 'edit');
   $('#btnPlay').innerHTML = sim.playing ? `⏸ <span>${t('pause')}</span>` : `▶ <span>${t('play')}</span>`;
@@ -640,7 +665,7 @@ function renderPanels() {
   if (items.length > 1) {
     const c = k => items.filter(i => i.kind === k).length;
     html = `<div class="selcount"><b>${t('selected')}: ${items.length}</b><br><span class="muted small">${t('joints')}: ${c('joint')} · ${t('linksW')}: ${c('link')} · ${t('cams')}: ${c('cam')}</span></div>
-      ${ro ? '' : `<div class="row wrap"><button data-act="delSel" class="danger">${t('delSel')}</button></div><div class="muted small">${t('multiHint')}</div>`}`;
+      ${ro ? '' : `<div class="row wrap">${c('link') >= 2 ? `<button data-act="merge" class="primary" title="${t('mergeTip')}">${t('merge')}</button>` : ''}<button data-act="delSel" class="danger">${t('delSel')}</button></div><div class="muted small">${t('multiHint')}${c('link') >= 2 ? ' ' + t('mergeHint') : ''}</div>`}`;
   } else if (it?.kind === 'joint') html = jointPanel(jointById(mech, it.id), ro);
   else if (it?.kind === 'link') html = linkPanel(linkById(mech, it.id), ro);
   else if (it?.kind === 'cam') html = camPanel(camById(mech, it.id), ro);
@@ -686,7 +711,7 @@ function jointPanel(j, ro) {
     ${j.type === 'G' && ls.length ? `<span>${t('makeDriver')}</span><select data-f="driver" ${ro}>${opt('', t('none'), '')}${ls.map(l => `<option value="${l.id}" ${mech.driver?.kind !== 'lin' && mech.driver?.pivot === j.id && mech.driver.link === l.id ? 'selected' : ''}>${esc(lname(l))}</option>`).join('')}</select>` : ''}
   </div>
   <div class="row"><span class="muted small">${t('link')}: ${ls.map(l => `<span class="chip">${esc(lname(l))}</span>`).join(' ') || '—'}</span></div>
-  ${ro ? '' : `<div class="row"><button data-act="delSel">${t('del')}</button></div>`}`;
+  ${ro ? '' : `<div class="row wrap"><button data-act="toggleFix" title="${t('toggleFixTip')}">${j.type === 'G' ? t('makeFree') : t('makeFixed')}</button><button data-act="delSel">${t('del')}</button></div>`}`;
 }
 function linkPanel(l, ro) {
   const nm = id => jointById(mech, id).name;
@@ -694,6 +719,7 @@ function linkPanel(l, ro) {
   const g = l.gear;
   return `<div class="muted small">${t('jointsOfLink')}: ${l.joints.map(id => `<span class="chip">${esc(nm(id))}</span>`).join('')}</div>
     <h3>${t('lengths')}</h3><div class="prop">${prs.map(([a, b]) => { const pa = P(a), pb = P(b); return `<span>${esc(nm(a))}${esc(nm(b))}, ${t('mm')}</span>${num(`data-len="${a}|${b}"`, fmt(Math.hypot(pa[0] - pb[0], pa[1] - pb[1])), 0.5, ro)}`; }).join('')}</div>
+    ${l.joints.length >= 3 && !g && !l.rack ? `<div class="prop"><span>${t('shape')}</span><select data-shape="1" ${ro}>${opt('plate', t('shapePlate'), l.bars ? 'bent' : 'plate')}${opt('bent', t('shapeBent'), l.bars ? 'bent' : 'plate')}</select></div>` : ''}
     <h3>${t('gearSec')}</h3><div class="prop">
       <span>${t('isGear')}</span><input type="checkbox" data-g="on" ${g ? 'checked' : ''} ${ro}>
       ${g ? `<span>${t('gearCenter')}</span><select data-g="center" ${ro}>${l.joints.map(id => opt(id, esc(nm(id)), g.center)).join('')}</select>
@@ -733,6 +759,11 @@ function updateCoordInputs() {
 }
 $('#props').addEventListener('change', e => {
   const el = e.target, it = primary();
+  if (el.dataset.shape && it?.kind === 'link') {
+    const l = linkById(mech, it.id); pushUndo();
+    if (el.value === 'bent') l.bars = chainBars(l.joints); else delete l.bars;
+    changed(); return;
+  }
   if (el.dataset.len) {
     const [a, b] = el.dataset.len.split('|'), ja = jointById(mech, a), jb = jointById(mech, b), L = +el.value;
     if (!(L > 0)) return renderPanels();
@@ -773,15 +804,26 @@ $('#props').addEventListener('change', e => {
 $('#props').addEventListener('click', e => {
   const a = e.target.dataset.act; if (!a) return;
   if (a === 'delSel') return deleteSelection();
+  if (a === 'merge') {
+    const ids = selItems().filter(i => i.kind === 'link').map(i => i.id);
+    const r = mergeLinks(JSON.parse(JSON.stringify(mech)), ids); // пробное объединение на копии
+    if (typeof r === 'string') { toast(t('merge_' + r)); return; }
+    pushUndo(); const nl = mergeLinks(mech, ids);
+    selectOnly({ kind: 'link', id: nl.id }); changed(); toast(t('mergeDone'), true); return;
+  }
   const it = primary(); if (!it) return;
   pushUndo();
+  if (a === 'toggleFix') {
+    const j = jointById(mech, it.id); if (!j) return;
+    j.type = j.type === 'G' ? 'R' : 'G'; j.rail = null; changed(); toast(t(j.type === 'G' ? 'madeFixed' : 'madeFree'), true); return;
+  }
   if (a === 'addPt') {
     const l = linkById(mech, it.id), pts = l.joints.map(id => jointById(mech, id));
     const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length, cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
     const [ax, ay] = [pts[0].x, pts[0].y], [bx, by] = [pts[1].x, pts[1].y], L = Math.hypot(bx - ax, by - ay) || 1;
     const off = pts.length === 2 ? 0.3 * L : 0;
     const nj = addJoint(mech, +(cx - (by - ay) / L * off).toFixed(3), +(cy + (bx - ax) / L * off).toFixed(3)); nj.trace = true;
-    l.joints.push(nj.id); selectOnly({ kind: 'joint', id: nj.id });
+    l.joints.push(nj.id); if (l.bars) l.bars.push([l.joints[0], nj.id]); selectOnly({ kind: 'joint', id: nj.id });
   }
   changed();
 });

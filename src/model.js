@@ -14,7 +14,39 @@ export function addJoint(m, x, y, type = 'R') {
   const j = { id: 'j' + m.nextId++, name: nextName(m), x, y, type, angle: 0, rail: null, trace: false };
   m.joints.push(j); return j;
 }
-export function addLink(m, ids) { const l = { id: 'l' + m.nextId++, joints: [...new Set(ids)] }; m.links.push(l); return l; }
+export function addLink(m, ids, bars = null) {
+  const l = { id: 'l' + m.nextId++, joints: [...new Set(ids)] };
+  if (bars && bars.length) l.bars = bars.map(b => [...b]);
+  m.links.push(l); return l;
+}
+// Ломаное (Г-образное) звено: стержни между соседними шарнирами в порядке щелчков
+export const chainBars = ids => ids.slice(1).map((id, k) => [ids[k], id]);
+// Объединение нескольких звеньев с общими шарнирами в одно жёсткое звено.
+// Возвращает новое звено или строку-ошибку ('notConnected' | 'special' | 'few').
+export function mergeLinks(m, ids) {
+  const ls = ids.map(id => linkById(m, id)).filter(Boolean);
+  if (ls.length < 2) return 'few';
+  if (ls.some(l => l.gear || l.rack || (m.cams || []).some(c => c.cam === l.id))) return 'special';
+  // связность через общие шарниры
+  const seen = new Set([ls[0].id]), stack = [ls[0]];
+  while (stack.length) { const a = stack.pop(); for (const b of ls) if (!seen.has(b.id) && b.joints.some(j => a.joints.includes(j))) { seen.add(b.id); stack.push(b); } }
+  if (seen.size !== ls.length) return 'notConnected';
+  const joints = [], bars = [], key = new Set();
+  const addBar = (a, b) => { const k = a < b ? a + '|' + b : b + '|' + a; if (a !== b && !key.has(k)) { key.add(k); bars.push([a, b]); } };
+  for (const l of ls) {
+    for (const j of l.joints) if (!joints.includes(j)) joints.push(j);
+    if (l.bars) l.bars.forEach(([a, b]) => addBar(a, b));
+    else if (l.joints.length === 2) addBar(l.joints[0], l.joints[1]);
+    else l.joints.forEach((a, k) => addBar(a, l.joints[(k + 1) % l.joints.length]));
+  }
+  const gone = new Set(ls.map(l => l.id)), pos = m.links.indexOf(ls[0]);
+  const nl = { id: 'l' + m.nextId++, joints, bars };
+  m.links = m.links.filter(l => !gone.has(l.id)); m.links.splice(Math.min(pos, m.links.length), 0, nl);
+  for (const j of m.joints) if (j.rail && gone.has(j.rail)) j.rail = nl.id;
+  if (m.driver?.kind === 'rot' && gone.has(m.driver.link)) m.driver.link = nl.id;
+  cleanup(m);
+  return nl;
+}
 export function newId(m, p) { return p + m.nextId++; }
 
 // Удаление набора объектов разом (одна запись в истории делается снаружи)
@@ -33,6 +65,7 @@ export const deleteLink = (m, id) => deleteItems(m, [{ kind: 'link', id }]);
 
 export function cleanup(m) {
   m.links = m.links.filter(l => l.joints.length >= 2);
+  for (const l of m.links) if (l.bars) { l.bars = l.bars.filter(([a, b]) => a !== b && l.joints.includes(a) && l.joints.includes(b)); if (!l.bars.length) delete l.bars; }
   const lids = new Set(m.links.map(l => l.id)), jids = new Set(m.joints.map(j => j.id));
   for (const l of m.links) if (l.gear && !l.joints.includes(l.gear.center)) l.gear.center = l.joints[0];
   for (const j of m.joints) if (j.rail && !lids.has(j.rail)) j.rail = null;
@@ -121,6 +154,7 @@ export function validate(obj) {
     const o = { id: String(l.id), joints: (l.joints || []).map(String).filter(x => ids.has(x)) };
     if (l.gear) o.gear = { center: String(l.gear.center), r: Math.max(0.1, +l.gear.r || 20), z: Math.max(3, Math.round(+l.gear.z || 20)), ring: !!l.gear.ring };
     if (l.rack) o.rack = { z: 0 };
+    if (Array.isArray(l.bars)) { const b = l.bars.filter(p => Array.isArray(p) && p.length === 2).map(p => p.map(String)); if (b.length) o.bars = b; }
     return o;
   }).filter(l => l.joints.length >= 2);
   const d = obj.driver;

@@ -129,6 +129,19 @@ Object.assign(PRESETS, {
     setLinearDriver(m, R1); Object.assign(m.driver, { speed: 30, smin: -40, smax: 40 });
     return m;
   },
+  // Г-образный (угловой) рычаг: кривошип → шатун → Г-образное коромысло BO₂C → шатун → ползун
+  bellcrank() {
+    const { m, J, L } = builder();
+    const O1 = [0, 0], O2 = [70, 30], A = polar(O1, 15, 60), B = circ(A, 70, O2, 30, down);
+    const u = [(B[0] - O2[0]) / 30, (B[1] - O2[1]) / 30], C = [O2[0] - u[1] * 45, O2[1] + u[0] * 45];
+    const yD = C[1] - 5, D = [C[0] + Math.sqrt(55 * 55 - 25), yD];
+    const o1 = J('O₁', O1, 'G'), o2 = J('O₂', O2, 'G'), a = J('A', A), b = J('B', B), c = J('C', C), d = J('D', D, 'P', { angle: 0, trace: true });
+    const crank = L(o1, a); L(a, b);
+    const bell = L(b, o2, c); m.links.find(l => l.id === bell).bars = [[b, o2], [o2, c]];
+    L(c, d);
+    setDriver(m, crank, o1); m.driver.speed = 90;
+    return m;
+  },
   camTrans() {
     const m = emptyMech(); const c = addCam(m, 0, 0);
     Object.assign(c, { law: 'cycloidal', h: 18, beta: [120, 45, 120, 75], rb: 30, rr: 7, e: 8 }); rebuildCam(m, c);
@@ -142,4 +155,4 @@ Object.assign(PRESETS, {
     m.driver.speed = 90; return m;
   },
 });
-export const PRESET_KEYS = ['fourbar', 'crankslider', 'watt', 'stephenson', 'jansen', 'kulisa', 'sliderdriven', 'gears', 'planetary', 'rack', 'camTrans', 'camRocker'];
+export const PRESET_KEYS = ['fourbar', 'crankslider', 'watt', 'stephenson', 'jansen', 'kulisa', 'sliderdriven', 'gears', 'planetary', 'rack', 'camTrans', 'camRocker', 'bellcrank'];
