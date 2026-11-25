@@ -143,6 +143,16 @@ Object.assign(PRESETS, {
     return m;
   },
   // Четырёхзвенник на полу: стойки стоят на полу, кривошип упирается в пол и качается туда-обратно
+  // v6: изогнутый рычаг качается между дуговой стеной и круглым упором (столкновения по дугам)
+  curvedstop() {
+    const { m, J, L } = builder();
+    const o = J('O', [0, 0], 'G'), a = J('A', [80, 0]), l = L(o, a);
+    m.links.at(-1).bend = { [o + ',' + a]: 14 };
+    setDriver(m, l, o); m.driver.speed = 60; m.driver.lock = 'reverse';
+    addWall(m, [[30, 100, -25], [100, 30]], -1);              // дуговая стена, выгнутая к шарниру O
+    addWall(m, [[60, -50, 10], [80, -50, 10]], 1, { closed: true }); // круглый упор R = 10
+    return m;
+  },
   floorstop() {
     const m = PRESETS.fourbar();
     addWall(m, [[-60, 0], [150, 0]], 1);
@@ -162,4 +172,4 @@ Object.assign(PRESETS, {
     m.driver.speed = 90; return m;
   },
 });
-export const PRESET_KEYS = ['fourbar', 'crankslider', 'watt', 'stephenson', 'jansen', 'kulisa', 'sliderdriven', 'gears', 'planetary', 'rack', 'camTrans', 'camRocker', 'bellcrank', 'floorstop'];
+export const PRESET_KEYS = ['fourbar', 'crankslider', 'watt', 'stephenson', 'jansen', 'kulisa', 'sliderdriven', 'gears', 'planetary', 'rack', 'camTrans', 'camRocker', 'bellcrank', 'floorstop', 'curvedstop'];

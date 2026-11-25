@@ -2,7 +2,7 @@ import { camFollowerHome } from './cam.js';
 export function emptyMech() { return { version: 2, joints: [], links: [], driver: null, gears: [], cams: [], walls: [], nextId: 1 }; }
 export const wallById = (m, id) => (m.walls || []).find(w => w.id === id);
 // Стена / пол: ломаная из ≥ 2 точек; side = 1 — штриховка справа от направления обхода, −1 — слева
-export function addWall(m, pts, side = 1) { const w = { id: newId(m, 'w'), pts: pts.map(p => [+p[0], +p[1]]), side }; (m.walls ||= []).push(w); return w; }
+export function addWall(m, pts, side = 1, opts = {}) { const w = { id: newId(m, 'w'), pts: pts.map(p => (p[2] ? [+p[0], +p[1], +p[2]] : [+p[0], +p[1]])), side, ...opts }; (m.walls ||= []).push(w); return w; }
 export const jointById = (m, id) => m.joints.find(j => j.id === id);
 export const linkById = (m, id) => m.links.find(l => l.id === id);
 export const linksOfJoint = (m, id) => m.links.filter(l => l.joints.includes(id));
@@ -44,6 +44,8 @@ export function mergeLinks(m, ids) {
   }
   const gone = new Set(ls.map(l => l.id)), pos = m.links.indexOf(ls[0]);
   const nl = { id: 'l' + m.nextId++, joints, bars };
+  const bend = Object.assign({}, ...ls.map(l => l.bend || {})); if (Object.keys(bend).length) nl.bend = bend;
+  const fil = Math.max(0, ...ls.map(l => l.fillet || 0)); if (fil > 0) nl.fillet = fil;
   m.links = m.links.filter(l => !gone.has(l.id)); m.links.splice(Math.min(pos, m.links.length), 0, nl);
   for (const j of m.joints) if (j.rail && gone.has(j.rail)) j.rail = nl.id;
   if (m.driver?.kind === 'rot' && gone.has(m.driver.link)) m.driver.link = nl.id;
@@ -160,6 +162,10 @@ export function validate(obj) {
     if (l.gear) o.gear = { center: String(l.gear.center), r: Math.max(0.1, +l.gear.r || 20), z: Math.max(3, Math.round(+l.gear.z || 20)), ring: !!l.gear.ring };
     if (l.rack) o.rack = { z: 0 };
     if (Array.isArray(l.bars)) { const b = l.bars.filter(p => Array.isArray(p) && p.length === 2).map(p => p.map(String)); if (b.length) o.bars = b; }
+    // v6: форма — изгиб участков, скругление изломов, скругление углов пластины
+    if (l.bend && typeof l.bend === 'object') { const b = {}; for (const [k, v] of Object.entries(l.bend)) if (/^[^,]+,[^,]+$/.test(k) && +v) b[k] = +v; if (Object.keys(b).length) o.bend = b; }
+    if (+l.fillet > 0) o.fillet = +l.fillet;
+    if (+l.round > 0) o.round = +l.round;
     return o;
   }).filter(l => l.joints.length >= 2);
   const d = obj.driver;
@@ -170,7 +176,7 @@ export function validate(obj) {
   m.cams = (obj.cams || []).map(c => ({ id: String(c.id), cam: String(c.cam), center: String(c.center), kind: c.kind === 'rocker' ? 'rocker' : 'trans', follower: String(c.follower), pivot: c.pivot ? String(c.pivot) : null,
     law: ['uniform', 'parabolic', 'harmonic', 'cycloidal'].includes(c.law) ? c.law : 'cycloidal', h: +c.h || 10, beta: (c.beta || [120, 60, 120, 60]).map(Number), rb: +c.rb || 30, rr: +c.rr || 0, e: +c.e || 0, arm: +c.arm || 55, pivotDist: +c.pivotDist || 70, phase: +c.phase || 0 }));
   m.walls = (obj.walls || []).filter(w => Array.isArray(w.pts) && w.pts.length >= 2)
-    .map(w => ({ id: String(w.id), pts: w.pts.map(p => [+p[0] || 0, +p[1] || 0]), side: w.side < 0 ? -1 : 1 }));
+    .map(w => { const o = { id: String(w.id), pts: w.pts.map(p => (+p[2] ? [+p[0] || 0, +p[1] || 0, +p[2]] : [+p[0] || 0, +p[1] || 0])), side: w.side < 0 ? -1 : 1 }; if (+w.fillet > 0) o.fillet = +w.fillet; if (w.closed) o.closed = true; return o; });
   const nums = [...m.joints, ...m.links, ...m.gears, ...m.cams, ...m.walls].map(o => parseInt(o.id.slice(1)) || 0);
   m.nextId = Math.max(obj.nextId || 1, ...nums, 0) + 1;
   cleanup(m);

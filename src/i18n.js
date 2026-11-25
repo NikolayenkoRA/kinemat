@@ -1,10 +1,11 @@
 const D = {
   ru: {
     theory: 'Теория',
-    toolWall: 'Стена / пол (W)', hintWall: 'Щёлкайте точки стены; двойной щелчок / Enter — готово, Esc — отмена. Сквозь стену механизм не проходит. Быстрый пол — «Добавить пол» в свойствах.',
+    toolWall: 'Стена / пол (W)', hintWall: 'Щёлкайте точки стены; двойной щелчок / Enter — готово, Esc — отмена. Сквозь стену механизм не проходит. Дуга — потяните ромбик в середине участка выделенной стены. Быстрый пол — «Добавить пол» в свойствах.',
     wallsW: 'стен', wallInfo: 'Стена — неподвижное ограничение (упор): шарниры и звенья не проходят сквозь неё. На подвижность W не влияет.', wallPts: 'Точки стены, мм (x, y)', wallSide: 'Штриховка', sideRight: 'справа (ниже для пола слева направо)', sideLeft: 'слева', wallAddPt: 'Добавить точку',
     addFloor: 'Добавить пол', addFloorTip: 'Длинная горизонтальная стена под механизмом', floorAdded: 'Пол добавлен под механизмом',
     wallStopMsg: 'Упор в стену — остановлено', wallReverseMsg: 'Упор в стену — направление изменено', p_floorstop: 'Четырёхзвенник на полу (упор в пол)',
+    p_curvedstop: 'Изогнутый рычаг между дуговой стеной и круглым упором', bulgeSec: 'Изгиб участков', bulge: 'Изгиб', bulgeTip: 'Стрелка прогиба дуги, мм: 0 — прямой участок, «+» — дуга выгнута влево по ходу, «−» — вправо; половина длины — полуокружность. Ромбик в середине участка можно тянуть мышью.', fillet: 'Радиус скругления', filletTip: 'Скругление углов между прямыми участками (касательная дуга)', wallClosed: 'Замкнуть контур', wallCircle: 'Сделать окружностью', wallCircleTip: 'Окружность, у которой первая и последняя точки стены — концы диаметра', formSec: 'Форма звена', formTip: 'Только вид и столкновения со стенами — на кинематику не влияет (расстояния между шарнирами прежние)', plateRound: 'Скругление углов', plateRoundTip: 'Контур пластины огибает шарниры на этом расстоянии, углы скруглены',
     toolBent: 'Г-образное (ломаное) звено (B)', hintBent: 'Щёлкайте точки ломаной по порядку (шарниры или пустое место) — получится одно жёсткое Г-образное звено. Двойной щелчок / Enter — готово, Esc — отмена.',
     makeFixed: 'Сделать неподвижным (стойка)', makeFree: 'Сделать подвижным', toggleFixTip: 'Неподвижный шарнир (стойка) ⇄ обычный шарнир', madeFixed: 'Шарнир закреплён — теперь это стойка', madeFree: 'Шарнир снова подвижный',
     merge: 'Объединить в одно звено', mergeTip: 'Сварить выделенные звенья в одно жёсткое (например, Г-образное)', mergeHint: '«Объединить в одно звено» — звенья с общими шарнирами станут одним жёстким звеном.',
@@ -61,10 +62,11 @@ const D = {
   },
   en: {
     theory: 'Theory',
-    toolWall: 'Wall / floor (W)', hintWall: 'Click the wall points; double-click / Enter finishes, Esc cancels. The mechanism cannot pass through walls. Quick floor: “Add floor” in Properties.',
+    toolWall: 'Wall / floor (W)', hintWall: 'Click the wall points; double-click / Enter finishes, Esc cancels. The mechanism cannot pass through walls. Arc: drag the diamond at the middle of a selected wall segment. Quick floor: “Add floor” in Properties.',
     wallsW: 'walls', wallInfo: 'A wall is a fixed obstacle (stop): joints and links cannot pass through it. It does not change the DOF W.', wallPts: 'Wall points, mm (x, y)', wallSide: 'Hatching', sideRight: 'right (below for a left-to-right floor)', sideLeft: 'left', wallAddPt: 'Add point',
     addFloor: 'Add floor', addFloorTip: 'A long horizontal wall below the mechanism', floorAdded: 'Floor added below the mechanism',
     wallStopMsg: 'Hit a wall — stopped', wallReverseMsg: 'Hit a wall — direction reversed', p_floorstop: 'Four-bar on a floor (hits the floor)',
+    p_curvedstop: 'Curved lever between an arc wall and a round stop', bulgeSec: 'Segment bend', bulge: 'Bend', bulgeTip: 'Arc sagitta, mm: 0 is straight, “+” bulges to the left along the segment, “−” to the right; half the length is a semicircle. Drag the diamond at the middle of the segment.', fillet: 'Fillet radius', filletTip: 'Rounds corners between straight segments (tangent arc)', wallClosed: 'Closed contour', wallCircle: 'Make a circle', wallCircleTip: 'A circle whose diameter runs from the first to the last wall point', formSec: 'Link shape', formTip: 'Visual and wall collisions only: kinematics unchanged (joint distances stay the same)', plateRound: 'Rounded corners', plateRoundTip: 'The plate outline wraps the joints at this distance, with rounded corners',
     toolBent: 'Bent (L-shaped) link (B)', hintBent: 'Click the polyline points in order (joints or empty space) — one rigid L-shaped link. Double-click / Enter finishes, Esc cancels.',
     makeFixed: 'Make fixed (ground)', makeFree: 'Make movable', toggleFixTip: 'Fixed pivot (ground) ⇄ ordinary joint', madeFixed: 'Joint fixed — it is a ground pivot now', madeFree: 'Joint is movable again',
     merge: 'Merge into one link', mergeTip: 'Weld the selected links into one rigid link (e.g. L-shaped)', mergeHint: '“Merge into one link” turns links sharing joints into one rigid link.',

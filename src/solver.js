@@ -388,9 +388,9 @@ export function dragPath(sys, X0, g, tx, ty, onStep = null, step = 0.02 * sys.sc
     X = dragTo(sys, X, g, sx, sy, 12, step / 2, 1.5 * step);
     const w = sys.lastWall;
     if (w) { // упор: скользим вдоль стены — оставляем только касательную составляющую
-      const [px, py] = pointOf(X, g), dx = w.seg[2] - w.seg[0], dy = w.seg[3] - w.seg[1], L = Math.hypot(dx, dy) || 1;
-      const u = ((sx - px) * dx + (sy - py) * dy) / L;
-      sys.lastWall = null; X = dragTo(sys, X, g, px + u * dx / L, py + u * dy / L, 12, step / 2, 1.5 * step);
+      const [px, py] = pointOf(X, g), [dx, dy] = w.tan; // касательная стены в точке контакта (у дуги — своя в каждой точке)
+      const u = (sx - px) * dx + (sy - py) * dy;
+      sys.lastWall = null; X = dragTo(sys, X, g, px + u * dx, py + u * dy, 12, step / 2, 1.5 * step);
       sys.contact = w;
     }
     if (onStep) onStep(X);

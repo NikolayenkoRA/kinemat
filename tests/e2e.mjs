@@ -346,6 +346,88 @@ try {
   await page.click('#btnTheory'); await page.waitForTimeout(400);
   check('Theory mentions walls as unilateral constraints, counts unchanged', (await page.textContent('#thBody')).includes('односторонние ограничения') && (await app(() => window.__app.theory().n)) === 3);
   await page.click('#thClose');
+
+  // --- v6: скругления — дуговые стены, изогнутые звенья, скруглённые пластины ---
+  await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200); await page.keyboard.press('Escape');
+  {
+    const W2S = p => page.evaluate(p => window.__app.toS(p[0], p[1]), p);
+    const setVal = (sel, v) => page.evaluate(([sel, v]) => { const el = document.querySelector(sel); el.value = v; el.dispatchEvent(new Event('change', { bubbles: true })); }, [sel, String(v)]);
+    const dragW = async (from, to) => { const [x0, y0] = await W2S(from), [x1, y1] = await W2S(to); await page.mouse.move(canvasBox.x + x0, canvasBox.y + y0); await page.mouse.down(); await page.mouse.move(canvasBox.x + x1, canvasBox.y + y1, { steps: 6 }); await page.mouse.up(); await page.waitForTimeout(60); };
+    canvasBox = await page.locator('#cv').boundingBox();
+    await page.keyboard.press('w');
+    for (const p of [[-40, -15], [130, -15]]) { const [x, y] = await W2S(p); await page.mouse.click(canvasBox.x + x, canvasBox.y + y); }
+    await page.keyboard.press('Enter'); await page.keyboard.press('Escape'); await page.waitForTimeout(60);
+    const wid = await app(() => window.__app.mech.walls.at(-1).id);
+    await app(id => window.__app.select('wall', id), wid); await page.waitForTimeout(60);
+    check('wall panel has «Изгиб участков», «Радиус скругления», «Замкнуть контур», «Сделать окружностью»', (await page.textContent('#props')).includes('Изгиб участков') && (await page.textContent('#props')).includes('Радиус скругления') && (await page.textContent('#props')).includes('Замкнуть контур') && (await page.locator('#props button[data-act=wallCircle]').textContent()) === 'Сделать окружностью');
+    await setVal('#props [data-wb="0"]', 20); await page.waitForTimeout(60);
+    check('«Изгиб» field turns the wall segment into an arc', (await app(() => window.__app.mech.walls.at(-1).pts[0][2])) === 20);
+    await dragW([45, 5], [45, -35]);
+    const bAfter = await app(() => window.__app.mech.walls.at(-1).pts[0][2]);
+    check('dragging the bend diamond flips the arc to the other side', bAfter === -20, `bend = ${bAfter}`);
+    await app(() => document.querySelector('#toast').classList.remove('show')); await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(shots, '35-wall-arc.png') });
+    await page.keyboard.press('Control+z'); await page.waitForTimeout(60);
+    check('Ctrl+Z restores the previous bend', (await app(() => window.__app.mech.walls.at(-1).pts[0][2])) === 20);
+    await app(id => window.__app.select('wall', id), wid); await page.waitForTimeout(60);
+    await page.click('#props button[data-act=wallCircle]'); await page.waitForTimeout(60);
+    const circ = await app(() => window.__app.mech.walls.at(-1));
+    check('«Сделать окружностью» makes a closed circular wall', circ.closed && circ.pts.length === 2 && circ.pts.every(p => p[2] === 85), JSON.stringify(circ.pts));
+    await page.keyboard.press('Control+z'); await page.waitForTimeout(60);
+    await app(id => window.__app.select('wall', id), wid); await page.waitForTimeout(60);
+    await page.keyboard.press('Delete'); await page.waitForTimeout(60);
+    check('arc wall deleted with Delete', (await app(id => window.__app.mech.walls.some(w => w.id === id), wid)) === false);
+    // звенья: изгиб кривошипа, ромбик, скругление углов пластины
+    const crank = await app(() => window.__app.mech.driver.link);
+    await app(id => window.__app.select('link', id), crank); await page.waitForTimeout(60);
+    check('link panel has «Форма звена» with «Изгиб»', (await page.textContent('#props')).includes('Форма звена') && (await page.locator('#props [data-lb]').count()) === 1);
+    await setVal('#props [data-lb]', 6); await page.waitForTimeout(60);
+    const bend1 = await app(() => { const a = window.__app, l = a.mech.links.find(l => l.id === a.mech.driver.link); return Object.values(l.bend || {})[0]; });
+    const hpos = await app(() => { const a = window.__app, l = a.mech.links.find(l => l.id === a.mech.driver.link), [k] = Object.keys(l.bend), [p, q] = k.split(','), A = a.P(p), B = a.P(q), L = Math.hypot(B[0] - A[0], B[1] - A[1]), n = [-(B[1] - A[1]) / L, (B[0] - A[0]) / L], s = l.bend[k]; return [[(A[0] + B[0]) / 2 + n[0] * s, (A[1] + B[1]) / 2 + n[1] * s], [(A[0] + B[0]) / 2 + n[0] * 4, (A[1] + B[1]) / 2 + n[1] * 4]]; });
+    await dragW(hpos[0], hpos[1]);
+    const bend2 = await app(() => { const a = window.__app, l = a.mech.links.find(l => l.id === a.mech.driver.link); return Object.values(l.bend || {})[0]; });
+    check('crank «Изгиб» field and diamond drag bend the link', bend1 === 6 && Math.abs(bend2 - 4) <= 0.5, `${bend1} → ${bend2}`);
+    const plate = await app(() => window.__app.mech.links.find(l => l.joints.length >= 3).id);
+    await app(id => window.__app.select('link', id), plate); await page.waitForTimeout(60);
+    await setVal('#props [data-lround="1"]', 6); await page.waitForTimeout(60);
+    check('«Скругление углов» rounds the plate', (await app(id => window.__app.mech.links.find(l => l.id === id).round, plate)) === 6);
+    await page.keyboard.press('Escape'); await page.waitForTimeout(60);
+    await app(() => document.querySelector('#toast').classList.remove('show')); await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(shots, '36-curved-links.png') });
+    check('curved shapes do not change W', (await page.textContent('#dofBadge')).includes('W = 1'));
+    await page.click('[data-mode=sim]'); await page.click('#btnPlay'); await page.waitForTimeout(700); await page.click('#btnPlay');
+    check('curved four-bar runs in simulation', (await app(() => Math.abs(window.__app.sim.theta - window.__app.sim.sys.theta0))) > 0.1);
+    await page.click('[data-mode=edit]');
+  }
+  // пример «Изогнутый рычаг»: свободное перемещение и симуляция
+  await page.selectOption('#preset', 'curvedstop'); await page.waitForTimeout(200);
+  {
+    const W2S = p => page.evaluate(p => window.__app.toS(p[0], p[1]), p);
+    canvasBox = await page.locator('#cv').boundingBox();
+    await page.click('[data-mode=drag]'); await page.waitForTimeout(60);
+    const aId = await jid('A'); const [ax, ay] = await scr(aId);
+    await page.mouse.move(canvasBox.x + ax, canvasBox.y + ay); await page.mouse.down();
+    let maxAng = -Infinity;
+    for (const d of [10, 25, 40, 60, 80]) { const [x, y] = await W2S([90 * Math.cos(d * Math.PI / 180), 90 * Math.sin(d * Math.PI / 180)]); await page.mouse.move(canvasBox.x + x, canvasBox.y + y, { steps: 3 }); await page.waitForTimeout(40); maxAng = Math.max(maxAng, await app(id => { const p = window.__app.P(id); return Math.atan2(p[1], p[0]) * 180 / Math.PI; }, aId)); }
+    const ct = await app(() => window.__app.sim.contact);
+    await page.screenshot({ path: path.join(shots, '37-curved-drag.png') });
+    await page.mouse.up();
+    check('free move: curved lever stops at the arc wall', ct && maxAng < 23.5 && maxAng > 20, `max angle ${maxAng.toFixed(2)}° (exact contact 23.44°)`);
+    await page.click('[data-mode=edit]'); await page.selectOption('#preset', 'curvedstop'); await page.waitForTimeout(200);
+    await page.click('[data-mode=sim]'); await page.click('#btnPlay');
+    let hit = false, toastTxt = '';
+    for (let k = 0; k < 240 && !hit; k++) { await page.waitForTimeout(50); const r = await app(() => ({ c: !!window.__app.sim.contact, t: document.querySelector('#toast').textContent })); if (r.c) { hit = true; toastTxt = r.t; } }
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(shots, '38-curved-preset-sim.png') });
+    const th = await app(() => window.__app.sim.theta * 180 / Math.PI);
+    await page.click('#btnPlay');
+    check('simulation: curved lever hits the arc wall, «Упор в стену», reverses', hit && toastTxt.includes('Упор в стену') && th < 23.45, `θ=${th.toFixed(2)}°`);
+    await page.click('[data-mode=edit]');
+    // автосохранение: форма сохраняется после перезагрузки
+    await page.reload(); await page.waitForTimeout(600);
+    const kept = await app(() => { const m = window.__app.mech; return !!m.links[0]?.bend && m.walls.some(w => w.closed) && m.walls[0].pts[0][2] === -25; });
+    check('after reload (autosave) bends and the closed round wall are kept', kept);
+  }
   await page.selectOption('#preset', 'fourbar'); await page.waitForTimeout(200);
 
   // --- Теория ---

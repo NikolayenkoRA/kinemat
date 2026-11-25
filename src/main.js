@@ -2,6 +2,7 @@ import { t, lang, setLang, applyStatic } from './i18n.js';
 import { initTheory, refreshTheory, toggleTheory, theoryAnalysis, setTheoryTab } from './theory-ui.js';
 import { emptyMech, addJoint, addLink, deleteItems, setDriver, setLinearDriver, fixDriver, dof, jointById, linkById, linksOfJoint, camById, addCam, rebuildCam, cleanup, newId, validate, mergeLinks, chainBars, addWall, wallById } from './model.js';
 import { floorFor } from './walls.js';
+import { wallPrims, wallBars, linkPrims, linkBars, bendOf, setBend, bulgeHandle, primDist, primPoints, hullCCW } from './curves.js';
 import { compile, advance, tangent, dragTo, dragPath, pointOf, localGrab, driverAngle, sweep, angCont, railFrame, saveAngles, loadAngles } from './solver.js';
 import { camProfile, camLaw, LAWS, camBetas } from './cam.js';
 import { PRESETS, PRESET_KEYS } from './presets.js';
@@ -135,6 +136,7 @@ function fitView() {
     if (s.driver) { const lin = s.driver.kind === 'lin'; const r = lin ? sweep(s, s.X0, s.theta0, 1, Math.max(4, (mech.driver.smax || 0) / 2), 2) : sweep(s, s.X0, s.theta0, 6, 360); r.frames.forEach(f => { for (let i = 0; i < s.N; i++) pts.push([f.X[2 * i], f.X[2 * i + 1]]); }); }
   } catch {}
   for (const l of mech.links) if (l.gear) { const c = jointById(mech, l.gear.center); const R = l.gear.r * 1.25 + 4; pts.push([c.x - R, c.y - R], [c.x + R, c.y + R]); }
+  for (const w of mech.walls || []) for (const q of wallPrims(w)) pts.push(...primPoints(q, 10));
   for (const c of mech.cams || []) { const cj = jointById(mech, c.center); const R = c.rb + c.h * 1.2 + c.rr; pts.push([cj.x - R, cj.y - R], [cj.x + R, cj.y + R]); }
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
@@ -187,6 +189,13 @@ function hitJoint(sx, sy, filter = () => true) {
 function hitLink(sx, sy) {
   let best = null, bd = 10;
   for (const l of mech.links) {
+    const cp = linkPrims(l, P);
+    if (cp) { // криволинейное звено (v6)
+      const [wx, wy] = toW(sx, sy);
+      if (l.round > 0 && !l.bars && inPoly([wx, wy], hullCCW(l.joints.map(P)))) return l;
+      for (const q of cp) { const d = primDist(wx, wy, q) * st.view.s; if (d < bd) { bd = d; best = l; } }
+      continue;
+    }
     if (l.bars) { for (const [a, b] of l.bars) { const d = segDist([sx, sy], toS(...P(a)), toS(...P(b))); if (d < bd) { bd = d; best = l; } } continue; }
     const pts = hull(l.joints.map(id => toS(...P(id))));
     if (pts.length >= 3 && inPoly([sx, sy], pts)) return l;
@@ -199,12 +208,25 @@ function hitLink(sx, sy) {
 }
 function hitCam(sx, sy) { for (const c of mech.cams || []) { const pts = camScreenPts(c); if (pts && inPoly([sx, sy], pts)) return c; } return null; }
 function hitWall(sx, sy, tol = 8) {
-  for (const w of mech.walls || []) for (let k = 1; k < w.pts.length; k++) if (segDist([sx, sy], toS(...w.pts[k - 1]), toS(...w.pts[k])) < tol) return w;
+  const [wx, wy] = toW(sx, sy);
+  for (const w of mech.walls || []) if (wallPrims(w).some(q => primDist(wx, wy, q) * st.view.s < tol)) return w;
   return null;
 }
 // вершина выделенной стены под курсором (для правки концов)
 function hitWallVertex(sx, sy) {
   for (const w of mech.walls || []) if (isSel('wall', w.id)) for (let k = 0; k < w.pts.length; k++) { const [x, y] = toS(...w.pts[k]); if (Math.hypot(x - sx, y - sy) < 9) return { w, k }; }
+  return null;
+}
+// ручки «Изгиб» (ромбики в середине участков) выделенных стен и звеньев
+function bulgeTargets() {
+  const out = [];
+  if (st.mode !== 'edit') return out;
+  for (const w of mech.walls || []) if (isSel('wall', w.id)) for (const [a, b, sg] of wallBars(w)) out.push({ kind: 'wall', w, k: a, A: w.pts[a], B: w.pts[b], s: sg });
+  if (st.selSet.size === 1) for (const l of mech.links) if (isSel('link', l.id) && !(mech.cams || []).some(c => c.cam === l.id)) for (const [a, b] of linkBars(l)) out.push({ kind: 'link', l, a, b, A: P(a), B: P(b), s: bendOf(l, a, b) });
+  return out;
+}
+function hitBulge(sx, sy) {
+  for (const h of bulgeTargets()) { const q = bulgeHandle(h.A[0], h.A[1], h.B[0], h.B[1], h.s), [x, y] = toS(q.x, q.y); if (Math.hypot(x - sx, y - sy) < 9) return h; }
   return null;
 }
 function hitAny(sx, sy) {
@@ -218,29 +240,51 @@ function hitAny(sx, sy) {
 
 // ---------- рисование ----------
 // Стена: толстая линия + штриховка с «твёрдой» стороны
-function wallPath(pts, side, col, lw, hatch = true) {
-  const S = pts.map(p => toS(...p));
+// Примитивы (отрезки и дуги, мировые оси) → путь на экране. connected — сплошной контур (для заливки).
+function tracePrims(prims, connected = false) {
+  prims.forEach((q, i) => {
+    const [x1, y1] = toS(q.x1, q.y1);
+    if (!connected || !i) ctx.moveTo(x1, y1);
+    if (q.k === 'L') ctx.lineTo(...toS(q.x2, q.y2));
+    else { const [cx, cy] = toS(q.cx, q.cy); ctx.arc(cx, cy, q.r * st.view.s, -q.a0, -(q.a0 + q.sw), q.sw > 0); }
+  });
+}
+// Стена: толстая линия (отрезки и дуги) + штриховка с «твёрдой» стороны, идущая вдоль кривой
+function wallPath(prims, side, col, lw, hatch = true) {
   ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.beginPath(); S.forEach((p, k) => (k ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.stroke();
+  ctx.beginPath(); tracePrims(prims); ctx.stroke();
   if (!hatch) return;
   ctx.lineWidth = 1.3; ctx.beginPath();
-  for (let k = 1; k < S.length; k++) {
-    const [ax, ay] = S[k - 1], [bx, by] = S[k], L = Math.hypot(bx - ax, by - ay); if (L < 1) continue;
-    const tx = (bx - ax) / L, ty = (by - ay) / L, nx = -ty * side, ny = tx * side; // экран: y вниз — справа от обхода в мировых осях
-    for (let d = 4; d < L; d += 9) { const x = ax + tx * d, y = ay + ty * d; ctx.moveTo(x, y); ctx.lineTo(x + 9 * nx - 6 * tx, y + 9 * ny - 6 * ty); }
+  for (const q of prims) {
+    const S = primPoints(q, 2).map(p => toS(...p)); let d = 4;
+    for (let k = 1; k < S.length; k++) {
+      const [ax, ay] = S[k - 1], [bx, by] = S[k], L = Math.hypot(bx - ax, by - ay); if (L < 1e-6) continue;
+      const tx = (bx - ax) / L, ty = (by - ay) / L, nx = -ty * side, ny = tx * side; // экран: y вниз — справа от обхода в мировых осях
+      for (; d < L; d += 9) { const x = ax + tx * d, y = ay + ty * d; ctx.moveTo(x, y); ctx.lineTo(x + 9 * nx - 6 * tx, y + 9 * ny - 6 * ty); }
+      d -= L;
+    }
   }
   ctx.stroke();
+}
+const linePrims = pts => pts.slice(1).map((p, k) => ({ k: 'L', x1: pts[k][0], y1: pts[k][1], x2: p[0], y2: p[1] }));
+function drawBulgeHandles() {
+  for (const h of bulgeTargets()) {
+    const q = bulgeHandle(h.A[0], h.A[1], h.B[0], h.B[1], h.s), [x, y] = toS(q.x, q.y);
+    ctx.fillStyle = h.s ? '#f59e0b' : '#fff'; ctx.strokeStyle = '#b45309'; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.moveTo(x, y - 6.5); ctx.lineTo(x + 6.5, y); ctx.lineTo(x, y + 6.5); ctx.lineTo(x - 6.5, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
 }
 function drawWalls(editing) {
   const now = performance.now(), hot = sim.contact && now - sim.contact.t < 1800 && st.mode !== 'edit' ? sim.contact : null;
   for (const w of mech.walls || []) {
     const sel = isSel('wall', w.id), hov = st.hover?.kind === 'wall' && st.hover.id === w.id;
-    if (sel) wallPath(w.pts, w.side, 'rgba(37,99,235,.25)', 12, false);
-    wallPath(w.pts, w.side, hot && hot.wall === w.id ? '#dc2626' : sel || hov ? '#1d4ed8' : '#334155', 3.2);
+    const wp = wallPrims(w);
+    if (sel) wallPath(wp, w.side, 'rgba(37,99,235,.25)', 12, false);
+    wallPath(wp, w.side, hot && hot.wall === w.id ? '#dc2626' : sel || hov ? '#1d4ed8' : '#334155', 3.2);
     if (sel && editing) { ctx.fillStyle = '#fff'; ctx.strokeStyle = '#1d4ed8'; ctx.lineWidth = 2; for (const p of w.pts) { const [x, y] = toS(...p); ctx.beginPath(); ctx.rect(x - 4.5, y - 4.5, 9, 9); ctx.fill(); ctx.stroke(); } }
   }
   if (editing && st.tool === 'wall' && st.wdraft.length) {
-    ctx.setLineDash([6, 5]); wallPath(st.cursor ? [...st.wdraft, st.cursor] : st.wdraft, 1, '#2563eb', 2.5); ctx.setLineDash([]);
+    ctx.setLineDash([6, 5]); wallPath(linePrims(st.cursor ? [...st.wdraft, st.cursor] : st.wdraft), 1, '#2563eb', 2.5); ctx.setLineDash([]);
   }
   if (hot) { const [x, y] = toS(hot.x, hot.y), r = 10 + 4 * Math.sin(now / 90); ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.stroke(); }
 }
@@ -308,7 +352,18 @@ function draw() {
     const pts = l.joints.map(id => toS(...P(id)));
     const sel = isSel('link', l.id), hov = st.hover?.kind === 'link' && st.hover.id === l.id;
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    if (l.bars) { // ломаное (Г-образное) звено: стержни с изгибом в шарнирах
+    const cp = !body && linkPrims(l, P);
+    if (cp && l.round > 0 && !l.bars) { // пластина со скруглёнными углами (v6)
+      const hp = hull(pts);
+      ctx.beginPath(); tracePrims(cp, true); ctx.closePath();
+      ctx.fillStyle = col + '40'; ctx.fill(); ctx.strokeStyle = col + (sel ? 'ff' : '99'); ctx.lineWidth = sel || hov ? 4 : 2.5; ctx.stroke();
+      ctx.beginPath(); hp.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); if (hp.length > 2) ctx.closePath();
+      ctx.strokeStyle = col + '88'; ctx.lineWidth = 1.5; ctx.stroke();
+    } else if (cp) { // изогнутые участки и скругления изломов (v6)
+      ctx.beginPath(); tracePrims(cp);
+      ctx.strokeStyle = col + (sel ? 'ff' : '55'); ctx.lineWidth = sel ? 18 : 16; ctx.stroke();
+      ctx.strokeStyle = col; ctx.lineWidth = sel || hov ? 4 : 3; ctx.stroke();
+    } else if (l.bars) { // ломаное (Г-образное) звено: стержни с изгибом в шарнирах
       ctx.beginPath(); for (const [a, b] of l.bars) { ctx.moveTo(...toS(...P(a))); ctx.lineTo(...toS(...P(b))); }
       ctx.strokeStyle = col + (sel ? 'ff' : '55'); ctx.lineWidth = sel ? 18 : 16; ctx.stroke();
       ctx.strokeStyle = col; ctx.lineWidth = sel || hov ? 4 : 3; ctx.stroke();
@@ -345,6 +400,7 @@ function draw() {
     st.draft.forEach((id, k) => { const p = toS(...P(id)); k ? ctx.lineTo(...p) : ctx.moveTo(...p); });
     if (st.cursor) ctx.lineTo(...toS(...st.cursor)); ctx.stroke(); ctx.setLineDash([]);
   }
+  if (editing) drawBulgeHandles();
   // шарниры
   for (const j of mech.joints) {
     const [x, y] = toS(...P(j.id));
@@ -510,6 +566,8 @@ function editDown(sx, sy, wpt, e) {
   if (tool === 'select') {
     const wv = !mod && hitWallVertex(sx, sy);
     if (wv) { action = { type: 'wallpt', w: wv.w, k: wv.k, pushed: false }; return; }
+    const bh = !mod && hitBulge(sx, sy);
+    if (bh) { action = { type: 'bulge', h: bh, pushed: false }; return; }
     if (it && mod) { toggleSel(it); renderPanels(); return; }
     if (it) {
       if (!isSel(it.kind, it.id)) selectOnly(it);
@@ -603,7 +661,7 @@ function finishBox(a) {
     if (hit) st.selSet.set('link:' + l.id, { kind: 'link', id: l.id });
   }
   for (const w of mech.walls || []) {
-    const pts = w.pts.map(p => toS(...p));
+    const pts = wallPrims(w).flatMap(q => primPoints(q, 8)).map(p => toS(...p));
     if (win ? pts.every(p => inRect(p, r)) : pts.some(p => inRect(p, r)) || pts.slice(1).some((p, k) => segRect(pts[k], p, r))) st.selSet.set('wall:' + w.id, { kind: 'wall', id: w.id });
   }
   for (const c of mech.cams || []) {
@@ -647,11 +705,18 @@ cv.addEventListener('pointermove', e => {
     if (!action.pushed) { if (Math.hypot(dx, dy) * st.view.s < 2) return; pushUndo(); action.pushed = true; }
     if (action.anchor) { const [ax, ay] = snapW(action.anchor[0] + dx, action.anchor[1] + dy); dx = ax - action.anchor[0]; dy = ay - action.anchor[1]; } else [dx, dy] = snapW(dx, dy);
     action.ids.forEach((id, k) => { const q = jointById(mech, id); q.x = action.orig[k][0] + dx; q.y = action.orig[k][1] + dy; });
-    (action.walls || []).forEach(({ w, pts }) => { w.pts = pts.map(p => [p[0] + dx, p[1] + dy]); });
+    (action.walls || []).forEach(({ w, pts }) => { w.pts = pts.map(p => [p[0] + dx, p[1] + dy, ...p.slice(2)]); });
     st.geom++; chart = null; updateCoordInputs();
   } else if (action.type === 'wallpt') {
     if (!action.pushed) { pushUndo(); action.pushed = true; }
-    action.w.pts[action.k] = snapW(...wpt); st.geom++; chart = null; renderPanels();
+    action.w.pts[action.k] = [...snapW(...wpt), ...action.w.pts[action.k].slice(2)]; st.geom++; chart = null; renderPanels();
+  } else if (action.type === 'bulge') { // тянем ромбик: изгиб = смещение от середины хорды по нормали
+    if (!action.pushed) { pushUndo(); action.pushed = true; }
+    const h = action.h, q = bulgeHandle(h.A[0], h.A[1], h.B[0], h.B[1], 0);
+    let v = Math.round(((wpt[0] - q.mx) * q.nx + (wpt[1] - q.my) * q.ny) * 2) / 2;
+    v = Math.max(-q.L, Math.min(q.L, Math.abs(v) < 0.5 ? 0 : v)); h.s = v;
+    if (h.kind === 'wall') { const p = h.w.pts[h.k]; if (v) p[2] = v; else p.length = 2; } else setBend(h.l, h.a, h.b, v);
+    st.geom++; chart = null; renderPanels();
   } else if (action.type === 'grab') {
     sim.target = wpt; grabStep(40);
   }
@@ -659,7 +724,7 @@ cv.addEventListener('pointermove', e => {
 function endPointer(e) {
   pointers.delete(e.pointerId);
   if (!action) return;
-  if ((action.type === 'move' || action.type === 'wallpt') && action.pushed) changed();
+  if ((action.type === 'move' || action.type === 'wallpt' || action.type === 'bulge') && action.pushed) changed();
   if (action.type === 'box') finishBox(action);
   if (action.type === 'grab') { sim.grab = null; updateV(); }
   action = null;
@@ -766,7 +831,21 @@ function renderPanels() {
 function wallPanel(w, ro) {
   return `<div class="muted small">${t('wallInfo')}</div><h3>${t('wallPts')}</h3><div class="wallpts">${w.pts.map((p, k) => `<span>${k + 1}</span>${num(`data-wp="${k}|0"`, fmt(p[0]), 0.5, ro)}${num(`data-wp="${k}|1"`, fmt(p[1]), 0.5, ro)}${!ro && w.pts.length > 2 ? `<button data-act="wallDelPt" data-k="${k}" title="${t('del')}">✕</button>` : '<span></span>'}`).join('')}</div>
     <div class="prop"><span>${t('wallSide')}</span><select data-wside="1" ${ro}>${opt(1, t('sideRight'), w.side)}${opt(-1, t('sideLeft'), w.side)}</select></div>
-    ${ro ? '' : `<div class="row wrap"><button data-act="wallAddPt">${t('wallAddPt')}</button><button data-act="delSel">${t('del')}</button></div>`}`;
+    <h3 title="${t('bulgeTip')}">${t('bulgeSec')}</h3><div class="prop">${wallBars(w).map(([a, b, sg]) => `<span title="${t('bulgeTip')}">${t('bulge')} ${a + 1}–${b + 1}, ${t('mm')}</span>${num(`data-wb="${a}"`, fmt(sg), 1, ro)}`).join('')}
+      <span title="${t('filletTip')}">${t('fillet')}, ${t('mm')}</span>${num('data-wfil="1"', fmt(w.fillet || 0), 1, ro)}
+      <span>${t('wallClosed')}</span><input type="checkbox" data-wclosed="1" ${w.closed ? 'checked' : ''} ${ro}></div>
+    ${ro ? '' : `<div class="row wrap"><button data-act="wallAddPt">${t('wallAddPt')}</button><button data-act="wallCircle" title="${t('wallCircleTip')}">${t('wallCircle')}</button><button data-act="delSel">${t('del')}</button></div>`}`;
+}
+// v6: форма звена — изгиб участков, скругление изломов, скругление углов пластины (только вид и столкновения со стенами)
+function linkFormPanel(l, ro) {
+  if (l.gear || l.rack || (mech.cams || []).some(c => c.cam === l.id)) return '';
+  const nm = id => jointById(mech, id).name, bars = linkBars(l), plate = !l.bars && l.joints.length >= 3;
+  if (!bars.length && !plate) return '';
+  return `<h3 title="${t('formTip')}">${t('formSec')}</h3><div class="prop">
+    ${bars.map(([a, b]) => `<span title="${t('bulgeTip')}">${t('bulge')} ${esc(nm(a))}${esc(nm(b))}, ${t('mm')}</span>${num(`data-lb="${a}|${b}"`, fmt(bendOf(l, a, b)), 1, ro)}`).join('')}
+    ${l.bars ? `<span title="${t('filletTip')}">${t('fillet')}, ${t('mm')}</span>${num('data-lfil="1"', fmt(l.fillet || 0), 1, ro)}` : ''}
+    ${plate ? `<span title="${t('plateRoundTip')}">${t('plateRound')}, ${t('mm')}</span>${num('data-lround="1"', fmt(l.round || 0), 1, ro)}` : ''}
+  </div>`;
 }
 function jointPanel(j, ro) {
   const [x, y] = P(j.id), ls = linksOfJoint(mech, j.id);
@@ -792,6 +871,7 @@ function linkPanel(l, ro) {
   return `<div class="muted small">${t('jointsOfLink')}: ${l.joints.map(id => `<span class="chip">${esc(nm(id))}</span>`).join('')}</div>
     <h3>${t('lengths')}</h3><div class="prop">${prs.map(([a, b]) => { const pa = P(a), pb = P(b); return `<span>${esc(nm(a))}${esc(nm(b))}, ${t('mm')}</span>${num(`data-len="${a}|${b}"`, fmt(Math.hypot(pa[0] - pb[0], pa[1] - pb[1])), 0.5, ro)}`; }).join('')}</div>
     ${l.joints.length >= 3 && !g && !l.rack ? `<div class="prop"><span>${t('shape')}</span><select data-shape="1" ${ro}>${opt('plate', t('shapePlate'), l.bars ? 'bent' : 'plate')}${opt('bent', t('shapeBent'), l.bars ? 'bent' : 'plate')}</select></div>` : ''}
+    ${linkFormPanel(l, ro)}
     <h3>${t('gearSec')}</h3><div class="prop">
       <span>${t('isGear')}</span><input type="checkbox" data-g="on" ${g ? 'checked' : ''} ${ro}>
       ${g ? `<span>${t('gearCenter')}</span><select data-g="center" ${ro}>${l.joints.map(id => opt(id, esc(nm(id)), g.center)).join('')}</select>
@@ -835,6 +915,19 @@ $('#props').addEventListener('change', e => {
     const w = wallById(mech, it.id); pushUndo();
     if (el.dataset.wside) w.side = +el.value < 0 ? -1 : 1;
     else { const [k, c] = el.dataset.wp.split('|').map(Number); w.pts[k][c] = +el.value || 0; }
+    changed(); return;
+  }
+  if ((el.dataset.wb || el.dataset.wfil || el.dataset.wclosed) && it?.kind === 'wall') {
+    const w = wallById(mech, it.id); pushUndo();
+    if (el.dataset.wb) { const p = w.pts[+el.dataset.wb], v = +el.value || 0; if (v) p[2] = v; else p.length = 2; }
+    else if (el.dataset.wfil) { const v = Math.max(0, +el.value || 0); if (v) w.fillet = v; else delete w.fillet; }
+    else if (el.checked) w.closed = true; else delete w.closed;
+    changed(); return;
+  }
+  if ((el.dataset.lb || el.dataset.lfil || el.dataset.lround) && it?.kind === 'link') {
+    const l = linkById(mech, it.id); pushUndo();
+    if (el.dataset.lb) { const [a, b] = el.dataset.lb.split('|'); setBend(l, a, b, +el.value || 0); }
+    else { const k = el.dataset.lfil ? 'fillet' : 'round', v = Math.max(0, +el.value || 0); if (v) l[k] = v; else delete l[k]; }
     changed(); return;
   }
   if (el.dataset.shape && it?.kind === 'link') {
@@ -894,6 +987,12 @@ $('#props').addEventListener('click', e => {
   }
   const it = primary(); if (!it) return;
   pushUndo();
+  if (a === 'wallCircle') { // окружность на первом и последнем точках как на диаметре
+    const w = wallById(mech, it.id); if (!w) return;
+    const p = w.pts[0], q = w.pts.at(-1), L = Math.hypot(q[0] - p[0], q[1] - p[1]) || 20;
+    w.pts = [[p[0], p[1], L / 2], [p[0] === q[0] && p[1] === q[1] ? p[0] + 20 : q[0], q[1], L / 2]]; w.closed = true; delete w.fillet;
+    changed(); return;
+  }
   if (a === 'wallAddPt' || a === 'wallDelPt') {
     const w = wallById(mech, it.id); if (!w) return;
     if (a === 'wallDelPt') w.pts.splice(+e.target.dataset.k, 1);
